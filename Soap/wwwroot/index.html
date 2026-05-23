@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Soap — TikTok Repost Backup</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0c0d10;
+    --panel: #15171c;
+    --border: #262931;
+    --text: #e6e8ec;
+    --muted: #8a8f99;
+    --accent: #ff3b6f;
+    --ok: #2ecc71;
+    --warn: #f5a623;
+    --err: #e74c3c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(12,13,16,.92);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 20px;
+  }
+  h1 { margin: 0 0 10px; font-size: 18px; font-weight: 600; }
+  .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  input[type="text"] {
+    flex: 1; min-width: 220px;
+    padding: 8px 12px;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font: inherit;
+  }
+  input:focus { outline: 1px solid var(--accent); }
+  button {
+    padding: 8px 16px;
+    background: var(--accent);
+    color: white;
+    border: 0;
+    border-radius: 8px;
+    font: inherit; font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: wait; }
+  .status {
+    margin-top: 10px;
+    display: flex; gap: 14px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .status .pill { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot.queued { background: var(--muted); }
+  .dot.downloading { background: var(--warn); animation: pulse 1.4s infinite; }
+  .dot.ready { background: var(--ok); }
+  .dot.failed { background: var(--err); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+  .toast {
+    margin-top: 10px;
+    padding: 8px 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--muted);
+    font-size: 13px;
+    white-space: pre-wrap;
+    font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+    max-height: 240px;
+    overflow: auto;
+  }
+  .toast.warn { border-color: var(--warn); color: var(--text); }
+  details.cookie-panel {
+    margin-top: 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+  }
+  details.cookie-panel[data-state="missing"] { border-color: var(--warn); }
+  details.cookie-panel > summary {
+    cursor: pointer;
+    font-size: 13px;
+    list-style: none;
+    display: flex; align-items: center; gap: 8px;
+  }
+  details.cookie-panel > summary::-webkit-details-marker { display: none; }
+  details.cookie-panel > summary::before {
+    content: "▸";
+    transition: transform .15s;
+    color: var(--muted);
+  }
+  details.cookie-panel[open] > summary::before { transform: rotate(90deg); }
+  .cookie-status { color: var(--muted); margin-left: auto; font-size: 12px; }
+  .cookie-status.ok { color: var(--ok); }
+  .cookie-status.warn { color: var(--warn); }
+  .cookie-body { padding-top: 10px; }
+  .cookie-body ol { margin: 0 0 10px; padding-left: 20px; color: var(--muted); }
+  .cookie-body ol li { margin-bottom: 4px; }
+  .cookie-body code {
+    background: #000;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--text);
+  }
+  .cookie-body textarea {
+    width: 100%;
+    min-height: 80px;
+    background: #000;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+    font: 12px ui-monospace, "Cascadia Code", Menlo, monospace;
+    resize: vertical;
+  }
+  .cookie-actions { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+  button.secondary {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+  }
+  a.bookmarklet {
+    display: inline-block;
+    padding: 6px 14px;
+    background: var(--accent);
+    color: white;
+    border-radius: 8px;
+    text-decoration: none;
+    font-weight: 600;
+    cursor: grab;
+    user-select: none;
+  }
+  a.bookmarklet:hover { filter: brightness(1.1); }
+  a.bookmarklet:active { cursor: grabbing; }
+  main { padding: 20px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 14px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .media {
+    position: relative;
+    aspect-ratio: 9 / 16;
+    background: #000;
+    overflow: hidden;
+  }
+  .media video, .media img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+  }
+  .placeholder {
+    width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted);
+    font-size: 13px;
+    text-align: center;
+    padding: 12px;
+  }
+  .badge {
+    position: absolute; top: 8px; left: 8px;
+    background: rgba(0,0,0,.6);
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    color: white;
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .body { padding: 10px 12px; }
+  .title {
+    font-size: 13px; font-weight: 500;
+    line-height: 1.35;
+    margin: 0 0 4px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .meta { color: var(--muted); font-size: 11px; display: flex; gap: 8px; }
+  .meta a { color: var(--muted); text-decoration: none; }
+  .meta a:hover { color: var(--text); }
+  .empty {
+    text-align: center; padding: 60px 20px; color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Soap — TikTok Repost Backup</h1>
+  <div class="controls">
+    <input id="username" type="text" placeholder="TikTok username (without @)" autocomplete="off">
+    <button id="scrape">Scrape reposts</button>
+  </div>
+  <div class="status" id="status">
+    <span class="pill"><span class="dot ready"></span> <span id="ct-ready">0</span> ready</span>
+    <span class="pill"><span class="dot downloading"></span> <span id="ct-downloading">0</span> downloading</span>
+    <span class="pill"><span class="dot queued"></span> <span id="ct-queued">0</span> queued</span>
+    <span class="pill"><span class="dot failed"></span> <span id="ct-failed">0</span> failed</span>
+  </div>
+  <div id="toast" class="toast" hidden></div>
+  <details id="bookmarklet-panel" class="cookie-panel" open>
+    <summary>
+      <span>Bookmarklet (recommended for reposts)</span>
+      <span class="cookie-status">drag the button to your bookmarks bar</span>
+    </summary>
+    <div class="cookie-body">
+      <p style="margin:0 0 8px;color:var(--muted);font-size:13px;">
+        yt-dlp can't enumerate the reposts tab. Workaround: a tiny script that runs in <em>your</em> browser tab, scrapes video links from the page, and sends them here.
+      </p>
+      <ol>
+        <li>Make sure your bookmarks bar is visible (Chrome/Firefox: <code>Ctrl+Shift+B</code>).</li>
+        <li>Drag this button onto it: <a id="bookmarklet-link" class="bookmarklet" href="#" draggable="true">📥 Soap reposts</a></li>
+        <li>Go to your TikTok reposts page: <code>tiktok.com/@yourname</code> → click the <strong>Reposts</strong> tab.</li>
+        <li>Click the <strong>Soap reposts</strong> bookmark. It scrolls to the bottom, collects every video link, and POSTs them here.</li>
+        <li>Switch back to this tab — the gallery fills up as videos finish downloading.</li>
+      </ol>
+      <p style="margin:6px 0 0;color:var(--muted);font-size:12px;">
+        Tip: scroll the reposts page a bit yourself first so TikTok knows to load thumbnails. The bookmarklet auto-scrolls until no new links appear for ~3.5s.
+      </p>
+    </div>
+  </details>
+  <details id="cookie-panel" class="cookie-panel">
+    <summary>
+      <span>TikTok cookies</span>
+      <span id="cookie-status" class="cookie-status">…</span>
+    </summary>
+    <div class="cookie-body">
+      <p style="margin:0 0 8px;color:var(--muted);font-size:13px;">
+        The reposts tab needs a logged-in session. Paste your TikTok cookie header — no extensions, no extra tools.
+      </p>
+      <ol>
+        <li>Log into <code>tiktok.com</code> in your browser.</li>
+        <li>Press <code>F12</code> → <strong>Network</strong> tab → reload the page if the list is empty.</li>
+        <li>Click any request to <code>tiktok.com</code> → scroll the right panel to <strong>Request Headers</strong>.</li>
+        <li>Copy the line that starts with <code>Cookie:</code> (or just the value after it).</li>
+        <li>Paste it below and click <strong>Save</strong>.</li>
+      </ol>
+      <textarea id="cookie-input" placeholder="Cookie: tt_csrf_token=...; sessionid=...; sid_tt=...; ..." spellcheck="false"></textarea>
+      <div class="cookie-actions">
+        <button id="cookie-save">Save cookies</button>
+        <button id="cookie-clear" class="secondary" hidden>Clear</button>
+        <span id="cookie-msg" style="color:var(--muted);font-size:12px;"></span>
+      </div>
+    </div>
+  </details>
+</header>
+<main>
+  <div id="grid" class="grid"></div>
+  <div id="empty" class="empty" hidden>No reposts yet. Enter a TikTok username above and click Scrape.</div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let pollTimer = null;
+let activePoll = false;
+
+async function jget(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${url}: ${r.status}`);
+  return r.json();
+}
+
+async function refreshStatus() {
+  try {
+    const s = await jget('/reposts/status');
+    $('ct-ready').textContent = s.ready;
+    $('ct-downloading').textContent = s.downloading;
+    $('ct-queued').textContent = s.queued;
+    $('ct-failed').textContent = s.failed;
+    return s;
+  } catch (e) {
+    console.error(e);
+    return null;
+  }
+}
+
+async function refreshGrid() {
+  const grid = $('grid');
+  const items = await jget('/reposts');
+  $('empty').hidden = items.length > 0;
+
+  // Build a map of existing cards by URL to update in place
+  const existing = new Map();
+  for (const el of grid.querySelectorAll('[data-url]')) existing.set(el.dataset.url, el);
+
+  grid.innerHTML = '';
+  for (const item of items) {
+    grid.appendChild(renderCard(item));
+  }
+}
+
+function renderCard(item) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.dataset.url = item.url;
+
+  const media = document.createElement('div');
+  media.className = 'media';
+
+  const badge = document.createElement('span');
+  badge.className = 'badge';
+  badge.innerHTML = `<span class="dot ${item.status.toLowerCase()}"></span> ${item.status}`;
+  media.appendChild(badge);
+
+  if (item.status === 'Ready' && item.cachedMediaUrl) {
+    const v = document.createElement('video');
+    v.src = item.cachedMediaUrl;
+    v.controls = true;
+    v.preload = 'metadata';
+    if (item.thumbnailUrl) v.poster = item.thumbnailUrl;
+    media.appendChild(v);
+  } else if (item.thumbnailUrl) {
+    const img = document.createElement('img');
+    img.src = item.thumbnailUrl;
+    img.loading = 'lazy';
+    media.appendChild(img);
+  } else {
+    const ph = document.createElement('div');
+    ph.className = 'placeholder';
+    ph.textContent = item.status === 'Failed'
+      ? (item.errorMessage || 'Download failed')
+      : 'Waiting…';
+    media.appendChild(ph);
+  }
+
+  const body = document.createElement('div');
+  body.className = 'body';
+  const title = document.createElement('p');
+  title.className = 'title';
+  title.textContent = item.title || item.url;
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  const link = document.createElement('a');
+  link.href = item.url;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.textContent = item.sourceProfile ? `@${item.sourceProfile}` : 'source';
+  meta.appendChild(link);
+  if (item.mediaDurationSeconds) {
+    const dur = document.createElement('span');
+    const s = item.mediaDurationSeconds;
+    dur.textContent = `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+    meta.appendChild(dur);
+  }
+  body.appendChild(title);
+  body.appendChild(meta);
+
+  card.appendChild(media);
+  card.appendChild(body);
+  return card;
+}
+
+async function poll() {
+  if (activePoll) return;
+  activePoll = true;
+  try {
+    const s = await refreshStatus();
+    await refreshGrid();
+    if (s && (s.queued > 0 || s.downloading > 0)) {
+      pollTimer = setTimeout(poll, 2000);
+    } else {
+      pollTimer = null;
+    }
+  } finally {
+    activePoll = false;
+  }
+}
+
+function ensurePolling() {
+  if (pollTimer) return;
+  poll();
+}
+
+function showToast(msg, isWarn) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.hidden = false;
+  el.classList.toggle('warn', !!isWarn);
+}
+
+$('scrape').addEventListener('click', async () => {
+  const username = $('username').value.trim().replace(/^@/, '');
+  if (!username) { $('username').focus(); return; }
+  const btn = $('scrape');
+  btn.disabled = true;
+  btn.textContent = 'Scraping…';
+  $('toast').hidden = true;
+  try {
+    const r = await fetch('/scrape', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username })
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      showToast(data.error || 'Scrape failed', true);
+    } else {
+      const msg = `Found ${data.found} URLs — ${data.queued} new, ${data.alreadyKnown} already known.`;
+      const diag = data.ytDlpStderr
+        ? `\n\nyt-dlp (exit ${data.ytDlpExitCode}):\n${data.ytDlpStderr}`
+        : '';
+      showToast(data.warning ? `${msg} ${data.warning}${diag}` : msg, !!data.warning);
+      await refreshGrid();
+      ensurePolling();
+    }
+  } catch (e) {
+    showToast(`Error: ${e.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Scrape reposts';
+  }
+});
+
+$('username').addEventListener('keydown', e => {
+  if (e.key === 'Enter') $('scrape').click();
+});
+
+async function refreshCookieState() {
+  try {
+    const { present } = await jget('/cookies');
+    const status = $('cookie-status');
+    const panel = $('cookie-panel');
+    if (present) {
+      status.textContent = '✓ set';
+      status.className = 'cookie-status ok';
+      panel.dataset.state = 'ok';
+      panel.open = false;
+      $('cookie-clear').hidden = false;
+    } else {
+      status.textContent = 'not set — required for reposts';
+      status.className = 'cookie-status warn';
+      panel.dataset.state = 'missing';
+      panel.open = true;
+      $('cookie-clear').hidden = true;
+    }
+  } catch (e) { console.error(e); }
+}
+
+$('cookie-save').addEventListener('click', async () => {
+  const text = $('cookie-input').value.trim();
+  const msg = $('cookie-msg');
+  if (!text) { msg.textContent = 'paste the Cookie header first'; return; }
+  const btn = $('cookie-save');
+  btn.disabled = true;
+  msg.textContent = 'saving…';
+  try {
+    const r = await fetch('/cookies', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cookieHeader: text })
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      msg.textContent = data.error || 'save failed';
+    } else {
+      $('cookie-input').value = '';
+      msg.textContent = data.warning
+        ? `Saved ${data.count} cookies. ${data.warning}`
+        : `Saved ${data.count} cookies (session detected).`;
+      await refreshCookieState();
+    }
+  } catch (e) {
+    msg.textContent = `error: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('cookie-clear').addEventListener('click', async () => {
+  if (!confirm('Delete saved TikTok cookies?')) return;
+  await fetch('/cookies', { method: 'DELETE' });
+  $('cookie-msg').textContent = 'cookies cleared.';
+  await refreshCookieState();
+});
+
+// --- Bookmarklet ---
+// This runs INSIDE the user's tiktok.com tab when they click the bookmark.
+// It's not loaded as a normal script here; we serialize the function into a
+// javascript: URL bound to the draggable link below.
+function soapBookmarkletBody(endpoint) {
+  return `(async () => {
+    const ENDPOINT = ${JSON.stringify(endpoint)};
+    const SCROLL_DELAY = 1200;
+    const STABLE_ROUNDS = 3;
+    const MAX_SCROLLS = 120;
+    const urls = new Set();
+    const collect = () => {
+      document.querySelectorAll('a[href*="/video/"]').forEach(a => {
+        try {
+          const u = new URL(a.href, location.href);
+          if (u.hostname.indexOf('tiktok.com') !== -1 && /\\/video\\/\\d+/.test(u.pathname)) {
+            urls.add(u.origin + u.pathname);
+          }
+        } catch (e) {}
+      });
+    };
+    const toast = document.createElement('div');
+    toast.style.cssText = 'position:fixed;top:16px;right:16px;z-index:2147483647;background:#0c0d10;color:#e6e8ec;padding:10px 14px;border-radius:8px;font:14px -apple-system,BlinkMacSystemFont,sans-serif;border:1px solid #444;max-width:320px;box-shadow:0 4px 20px rgba(0,0,0,.4);';
+    toast.textContent = 'Soap: collecting…';
+    document.body.appendChild(toast);
+    collect();
+    let last = 0, stable = 0;
+    for (let i = 0; i < MAX_SCROLLS; i++) {
+      window.scrollTo(0, document.body.scrollHeight);
+      await new Promise(r => setTimeout(r, SCROLL_DELAY));
+      collect();
+      toast.textContent = 'Soap: collecting… ' + urls.size + ' found';
+      if (urls.size === last) {
+        stable++;
+        if (stable >= STABLE_ROUNDS) break;
+      } else {
+        stable = 0;
+        last = urls.size;
+      }
+    }
+    if (urls.size === 0) {
+      toast.textContent = 'Soap: no video links found on this page. Are you on the Reposts tab?';
+      setTimeout(() => toast.remove(), 6000);
+      return;
+    }
+    const m = location.pathname.match(/@([\\w.-]+)/);
+    const profile = m ? m[1] : null;
+    toast.textContent = 'Soap: sending ' + urls.size + ' URLs…';
+    try {
+      const r = await fetch(ENDPOINT, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ urls: Array.from(urls), sourceProfile: profile })
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      toast.textContent = 'Soap: ' + data.queued + ' new, ' + data.alreadyKnown + ' already known (of ' + urls.size + ').';
+      toast.style.borderColor = '#2ecc71';
+    } catch (e) {
+      toast.textContent = 'Soap error: ' + e.message + '. Is the server running at ' + ENDPOINT + '?';
+      toast.style.borderColor = '#e74c3c';
+    }
+    setTimeout(() => toast.remove(), 8000);
+  })();`;
+}
+
+(function setupBookmarklet() {
+  const endpoint = `${location.origin}/reposts/bulk`;
+  const src = soapBookmarkletBody(endpoint);
+  // Bookmarklets must be a single-line javascript: URL.
+  const href = 'javascript:' + encodeURIComponent(src.replace(/\s+/g, ' '));
+  $('bookmarklet-link').setAttribute('href', href);
+  $('bookmarklet-link').addEventListener('click', e => {
+    e.preventDefault();
+    alert('Drag this button to your bookmarks bar — clicking it here does nothing because you have to be on tiktok.com when you run it.');
+  });
+})();
+
+// Initial load
+refreshCookieState();
+refreshStatus().then(() => refreshGrid()).then(ensurePolling);
+</script>
+</body>
+</html>

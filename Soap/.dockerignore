@@ -1,0 +1,17 @@
+bin/
+obj/
+**/bin/
+**/obj/
+
+# Local runtime data — must NOT be baked into the image; mounted as a volume instead.
+Data/
+
+# IDE / OS junk
+.vs/
+.vscode/
+.idea/
+*.user
+
+# Misc
+**/.DS_Store
+**/Thumbs.db

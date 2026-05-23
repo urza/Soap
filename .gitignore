@@ -1,0 +1,12 @@
+bin/
+obj/
+*.user
+.vs/
+.vscode/
+.idea/
+
+# Local runtime data
+Soap/Data/media-cache/
+Soap/Data/link-preview-settings.json
+Soap/Data/reposts.json
+Soap/Data/tiktok-cookies.txt

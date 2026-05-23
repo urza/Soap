@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build *)",
+      "Bash(dotnet run *)",
+      "Bash(curl -sf http://localhost:5080/health)",
+      "Bash(curl -s http://localhost:5080/health)",
+      "Bash(curl -s http://localhost:5080/reposts)",
+      "Bash(curl -s http://localhost:5080/reposts/status)",
+      "Bash(curl -s http://localhost:5080/)",
+      "Bash(curl -s -X POST http://localhost:5080/scrape -H \"content-type: application/json\" -d '{\"username\":\"someuser\"}')",
+      "Bash(kill %1)",
+      "Bash(pkill -f \"dotnet run\")",
+      "Bash(pkill -f \"Soap.dll\")",
+      "Bash(curl -s http://localhost:5080/cookies)",
+      "Bash(curl -s -X POST http://localhost:5080/cookies -H \"content-type: application/json\" -d '{\"cookieHeader\":\"\"}')",
+      "Bash(curl -s -X POST http://localhost:5080/cookies -H \"content-type: application/json\" -d '{\"cookieHeader\":\"Cookie: tt_csrf_token=ABC; sessionid=XYZ; tt_webid_v2=12345\"}')",
+      "Bash(curl -s -X POST http://localhost:5080/cookies -H \"content-type: application/json\" -d '{\"cookieHeader\":\"tt_csrf_token=ABC\"}')",
+      "Bash(curl -s -X DELETE http://localhost:5080/cookies)"
+    ]
+  }
+}
