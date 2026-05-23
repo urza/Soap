@@ -1,8 +1,16 @@
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.FileProviders;
 using Soap.Models;
 using Soap.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Serialize enums (RepostStatus, CachedMediaType) as strings, not integers, so
+// the frontend can do e.g. item.status.toLowerCase() without surprises.
+builder.Services.ConfigureHttpJsonOptions(opts =>
+{
+    opts.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+});
 
 // Named HttpClient for link preview OG scraping
 builder.Services.AddHttpClient("LinkPreview", client =>
