@@ -220,18 +220,32 @@
     </summary>
     <div class="cookie-body">
       <p style="margin:0 0 8px;color:var(--muted);font-size:13px;">
-        yt-dlp can't enumerate the reposts tab. Workaround: a tiny script that runs in <em>your</em> browser tab, scrapes video links from the page, and sends them here.
+        TikTok's Content Security Policy blocks scripts on their page from POSTing to us directly. Workaround: the bookmarklet scrolls the page, collects video links, and copies them to your <strong>clipboard</strong>. You then paste them into the panel below.
       </p>
       <ol>
         <li>Make sure your bookmarks bar is visible (Chrome/Firefox: <code>Ctrl+Shift+B</code>).</li>
         <li>Drag this button onto it: <a id="bookmarklet-link" class="bookmarklet" href="#" draggable="true">📥 Soap reposts</a></li>
         <li>Go to your TikTok reposts page: <code>tiktok.com/@yourname</code> → click the <strong>Reposts</strong> tab.</li>
-        <li>Click the <strong>Soap reposts</strong> bookmark. It scrolls to the bottom, collects every video link, and POSTs them here.</li>
-        <li>Switch back to this tab — the gallery fills up as videos finish downloading.</li>
+        <li>Click the <strong>Soap reposts</strong> bookmark. It auto-scrolls, then copies all video URLs to your clipboard.</li>
+        <li>Switch to this tab → paste (Ctrl+V) into the <strong>Paste URLs</strong> panel below → click <strong>Import</strong>.</li>
       </ol>
       <p style="margin:6px 0 0;color:var(--muted);font-size:12px;">
-        Tip: scroll the reposts page a bit yourself first so TikTok knows to load thumbnails. The bookmarklet auto-scrolls until no new links appear for ~3.5s.
+        Tip: scroll the reposts page a bit yourself first so TikTok loads thumbnails. The bookmarklet auto-scrolls until no new links appear for ~3.5s.
       </p>
+    </div>
+  </details>
+  <details id="import-panel" class="cookie-panel" open>
+    <summary>
+      <span>Paste URLs</span>
+      <span class="cookie-status">paste here after running the bookmarklet</span>
+    </summary>
+    <div class="cookie-body">
+      <textarea id="import-input" placeholder="One URL per line — paste from clipboard (Ctrl+V)" spellcheck="false" style="width:100%;min-height:120px;background:#000;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px;font:12px ui-monospace,Menlo,monospace;resize:vertical;"></textarea>
+      <div class="cookie-actions">
+        <button id="import-submit">Import</button>
+        <button id="import-paste" class="secondary">Paste from clipboard</button>
+        <span id="import-msg" style="color:var(--muted);font-size:12px;"></span>
+      </div>
     </div>
   </details>
   <details id="cookie-panel" class="cookie-panel">
@@ -489,11 +503,11 @@ $('cookie-clear').addEventListener('click', async () => {
 
 // --- Bookmarklet ---
 // This runs INSIDE the user's tiktok.com tab when they click the bookmark.
-// It's not loaded as a normal script here; we serialize the function into a
-// javascript: URL bound to the draggable link below.
-function soapBookmarkletBody(endpoint) {
+// TikTok's CSP blocks any cross-origin fetch from page scripts, so instead of
+// POSTing directly we copy the URL list to the clipboard. The user then pastes
+// it into the "Paste URLs" panel on the Soap tab (same-origin → no CSP issue).
+function soapBookmarkletBody() {
   return `(async () => {
-    const ENDPOINT = ${JSON.stringify(endpoint)};
     const SCROLL_DELAY = 1200;
     const STABLE_ROUNDS = 3;
     const MAX_SCROLLS = 120;
@@ -509,7 +523,7 @@ function soapBookmarkletBody(endpoint) {
       });
     };
     const toast = document.createElement('div');
-    toast.style.cssText = 'position:fixed;top:16px;right:16px;z-index:2147483647;background:#0c0d10;color:#e6e8ec;padding:10px 14px;border-radius:8px;font:14px -apple-system,BlinkMacSystemFont,sans-serif;border:1px solid #444;max-width:320px;box-shadow:0 4px 20px rgba(0,0,0,.4);';
+    toast.style.cssText = 'position:fixed;top:16px;right:16px;z-index:2147483647;background:#0c0d10;color:#e6e8ec;padding:10px 14px;border-radius:8px;font:14px -apple-system,BlinkMacSystemFont,sans-serif;border:1px solid #444;max-width:340px;box-shadow:0 4px 20px rgba(0,0,0,.4);';
     toast.textContent = 'Soap: collecting…';
     document.body.appendChild(toast);
     collect();
@@ -528,34 +542,32 @@ function soapBookmarkletBody(endpoint) {
       }
     }
     if (urls.size === 0) {
-      toast.textContent = 'Soap: no video links found on this page. Are you on the Reposts tab?';
-      setTimeout(() => toast.remove(), 6000);
+      toast.textContent = 'Soap: no video links found. Are you on the Reposts tab?';
+      toast.style.borderColor = '#e74c3c';
+      setTimeout(() => toast.remove(), 8000);
       return;
     }
-    const m = location.pathname.match(/@([\\w.-]+)/);
-    const profile = m ? m[1] : null;
-    toast.textContent = 'Soap: sending ' + urls.size + ' URLs…';
+    const list = Array.from(urls).join('\\n');
     try {
-      const r = await fetch(ENDPOINT, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ urls: Array.from(urls), sourceProfile: profile })
-      });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const data = await r.json();
-      toast.textContent = 'Soap: ' + data.queued + ' new, ' + data.alreadyKnown + ' already known (of ' + urls.size + ').';
+      await navigator.clipboard.writeText(list);
+      toast.textContent = 'Soap: copied ' + urls.size + ' URLs to clipboard. Switch to the Soap tab and paste.';
       toast.style.borderColor = '#2ecc71';
     } catch (e) {
-      toast.textContent = 'Soap error: ' + e.message + '. Is the server running at ' + ENDPOINT + '?';
-      toast.style.borderColor = '#e74c3c';
+      const ta = document.createElement('textarea');
+      ta.value = list;
+      ta.style.cssText = 'position:fixed;top:60px;right:16px;width:340px;height:240px;z-index:2147483647;';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); toast.textContent = 'Soap: copied ' + urls.size + ' URLs (legacy). Paste into Soap tab.'; }
+      catch (e2) { toast.textContent = 'Soap: clipboard blocked. Copy from the textbox manually (Ctrl+C).'; }
+      setTimeout(() => ta.remove(), 12000);
     }
-    setTimeout(() => toast.remove(), 8000);
+    setTimeout(() => toast.remove(), 12000);
   })();`;
 }
 
 (function setupBookmarklet() {
-  const endpoint = `${location.origin}/reposts/bulk`;
-  const src = soapBookmarkletBody(endpoint);
+  const src = soapBookmarkletBody();
   // Bookmarklets must be a single-line javascript: URL.
   const href = 'javascript:' + encodeURIComponent(src.replace(/\s+/g, ' '));
   $('bookmarklet-link').setAttribute('href', href);
@@ -564,6 +576,60 @@ function soapBookmarkletBody(endpoint) {
     alert('Drag this button to your bookmarks bar — clicking it here does nothing because you have to be on tiktok.com when you run it.');
   });
 })();
+
+// --- Paste/import URLs from bookmarklet ---
+function parseUrls(text) {
+  const out = [];
+  const seen = new Set();
+  for (const line of text.split(/[\r\n]+/)) {
+    const t = line.trim();
+    if (!t) continue;
+    if (!/^https?:\/\//i.test(t)) continue;
+    if (!seen.has(t)) { seen.add(t); out.push(t); }
+  }
+  return out;
+}
+
+async function submitImport(urls) {
+  const msg = $('import-msg');
+  const btn = $('import-submit');
+  if (urls.length === 0) { msg.textContent = 'no valid URLs to import'; return; }
+  btn.disabled = true;
+  msg.textContent = `importing ${urls.length}…`;
+  try {
+    const profileGuess = (urls[0].match(/@([\w.-]+)/) || [])[1] || null;
+    const r = await fetch('/reposts/bulk', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ urls, sourceProfile: profileGuess })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    msg.textContent = `imported: ${d.queued} new, ${d.alreadyKnown} known, ${d.skipped} skipped`;
+    $('import-input').value = '';
+    await refreshGrid();
+    ensurePolling();
+  } catch (e) {
+    msg.textContent = 'error: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$('import-submit').addEventListener('click', () => {
+  submitImport(parseUrls($('import-input').value));
+});
+
+$('import-paste').addEventListener('click', async () => {
+  try {
+    const text = await navigator.clipboard.readText();
+    $('import-input').value = text;
+    submitImport(parseUrls(text));
+  } catch (e) {
+    $('import-msg').textContent = 'clipboard read denied — paste manually with Ctrl+V';
+    $('import-input').focus();
+  }
+});
 
 // Initial load
 refreshCookieState();
