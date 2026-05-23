@@ -22,6 +22,7 @@ builder.Services.AddHttpClient("LinkPreview", client =>
 
 builder.Services.AddSingleton<LinkPreviewSettingsService>();
 builder.Services.AddSingleton<LinkPreviewService>();
+builder.Services.AddSingleton<PacingSettings>();
 builder.Services.AddSingleton<MediaCacheService>();
 builder.Services.AddSingleton<PreviewCoordinator>();
 builder.Services.AddSingleton<RepostStore>();
@@ -167,6 +168,15 @@ app.MapGet("/reposts/status", (RepostStore store) =>
     return Results.Ok(new { queued = q, downloading = d, ready = r, failed = f, total = q + d + r + f });
 });
 
+app.MapGet("/pacing", (PacingSettings p) =>
+    Results.Ok(new { minMs = p.MinDelayMs, maxMs = p.MaxDelayMs, hardMaxMs = PacingSettings.HardMaxDelayMs }));
+
+app.MapPost("/pacing", async (PacingRequest req, PacingSettings p) =>
+{
+    await p.SetAsync(req.MinMs, req.MaxMs);
+    return Results.Ok(new { minMs = p.MinDelayMs, maxMs = p.MaxDelayMs });
+});
+
 app.MapPost("/reposts/retry-failed", (RepostStore store, MediaCacheService mediaSvc, PreviewCoordinator coord) =>
 {
     var failed = store.GetAll().Where(e => e.Status == RepostStatus.Failed).ToList();
@@ -275,3 +285,4 @@ internal record QueueRequest(string Url, bool? IncludeMedia);
 internal record ScrapeRequest(string Username);
 internal record CookieRequest(string CookieHeader);
 internal record BulkImportRequest(List<string> Urls, string? SourceProfile);
+internal record PacingRequest(int MinMs, int MaxMs);

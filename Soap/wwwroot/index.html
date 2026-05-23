@@ -294,6 +294,33 @@
       </div>
     </div>
   </details>
+  <details id="pacing-panel" class="cookie-panel">
+    <summary>
+      <span>Download pacing</span>
+      <span id="pacing-status" class="cookie-status">…</span>
+    </summary>
+    <div class="cookie-body">
+      <p style="margin:0 0 8px;color:var(--muted);font-size:13px;">
+        Random delay between downloads (in milliseconds). Each download waits a random duration in this range before the next one starts. Lower = faster but more likely to trip TikTok's rate limit. Default: 2500–5500 ms.
+      </p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <label style="display:flex;flex-direction:column;font-size:11px;color:var(--muted);">Min (ms)
+          <input id="pacing-min" type="number" min="0" step="100" style="width:110px;background:#000;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font:inherit;">
+        </label>
+        <label style="display:flex;flex-direction:column;font-size:11px;color:var(--muted);">Max (ms)
+          <input id="pacing-max" type="number" min="0" step="100" style="width:110px;background:#000;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font:inherit;">
+        </label>
+        <button id="pacing-save" style="align-self:flex-end;">Save</button>
+        <span id="pacing-msg" style="color:var(--muted);font-size:12px;align-self:flex-end;"></span>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="secondary pacing-preset" data-min="500" data-max="1500" style="font-size:12px;padding:4px 10px;">Aggressive (0.5–1.5s)</button>
+        <button class="secondary pacing-preset" data-min="2500" data-max="5500" style="font-size:12px;padding:4px 10px;">Default (2.5–5.5s)</button>
+        <button class="secondary pacing-preset" data-min="8000" data-max="15000" style="font-size:12px;padding:4px 10px;">Safe (8–15s)</button>
+        <button class="secondary pacing-preset" data-min="20000" data-max="40000" style="font-size:12px;padding:4px 10px;">Glacial (20–40s)</button>
+      </div>
+    </div>
+  </details>
 </section>
 <main>
   <div id="grid" class="grid"></div>
@@ -688,8 +715,53 @@ $('import-paste').addEventListener('click', async () => {
   }
 });
 
+// --- Pacing settings ---
+async function refreshPacingState() {
+  try {
+    const p = await jget('/pacing');
+    $('pacing-min').value = p.minMs;
+    $('pacing-max').value = p.maxMs;
+    $('pacing-status').textContent = `${(p.minMs/1000).toFixed(1)}–${(p.maxMs/1000).toFixed(1)}s between downloads`;
+  } catch (e) { console.error(e); }
+}
+
+async function savePacing(min, max) {
+  const msg = $('pacing-msg');
+  msg.textContent = 'saving…';
+  try {
+    const r = await fetch('/pacing', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ minMs: min, maxMs: max })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    msg.textContent = 'saved';
+    setTimeout(() => msg.textContent = '', 1500);
+    await refreshPacingState();
+  } catch (e) {
+    msg.textContent = 'error: ' + e.message;
+  }
+}
+
+$('pacing-save').addEventListener('click', () => {
+  const min = Math.max(0, parseInt($('pacing-min').value || '0', 10));
+  const max = Math.max(min, parseInt($('pacing-max').value || '0', 10));
+  savePacing(min, max);
+});
+
+document.querySelectorAll('.pacing-preset').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const min = parseInt(btn.dataset.min, 10);
+    const max = parseInt(btn.dataset.max, 10);
+    $('pacing-min').value = min;
+    $('pacing-max').value = max;
+    savePacing(min, max);
+  });
+});
+
 // Initial load
 refreshCookieState();
+refreshPacingState();
 refreshStatus().then(s => {
   // First-time user (nothing imported yet)? Show the instructions panels.
   if (s && s.total === 0) {

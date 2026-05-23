@@ -161,13 +161,13 @@ docker run -d \
 **Windows (PowerShell or cmd):**
 ```bat
 docker pull ghcr.io/urza/yap:latest & ^
-docker stop yapdoc & ^
-docker rm yapdoc & ^
-docker run -d --name yapdoc ^
+docker stop soap & ^
+docker rm soap & ^
+docker run -d --name soap ^
   --restart=unless-stopped ^
   -p 6777:8080 ^
-  -v D:/dockerdata/yap-doc/uploads:/app/wwwroot/uploads ^
-  -v D:/dockerdata/yap-doc/config:/app/Data ^
+  -v D:/dockerdata/soap/uploads:/app/wwwroot/uploads ^
+  -v D:/dockerdata/soap/config:/app/Data ^
   ghcr.io/urza/yap:latest
 ```
 
@@ -270,12 +270,12 @@ docker image prune -f
 ```bat
 @echo off
 docker pull ghcr.io/urza/yap:latest
-docker stop yapdoc
-docker rm yapdoc
-docker run -d --name yapdoc --restart=unless-stopped ^
+docker stop soap
+docker rm soap
+docker run -d --name soap --restart=unless-stopped ^
   -p 6777:8080 ^
-  -v D:/dockerdata/yap-doc/uploads:/app/wwwroot/uploads ^
-  -v D:/dockerdata/yap-doc/config:/app/Data ^
+  -v D:/dockerdata/soap/uploads:/app/wwwroot/uploads ^
+  -v D:/dockerdata/soap/config:/app/Data ^
   ghcr.io/urza/yap:latest
 docker image prune -f
 ```

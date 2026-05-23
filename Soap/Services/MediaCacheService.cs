@@ -12,6 +12,7 @@ public class MediaCacheService
     private readonly IWebHostEnvironment _env;
     private readonly LinkPreviewSettingsService _settings;
     private readonly LinkPreviewService? _linkPreviewService;
+    private readonly PacingSettings _pacing;
 
     // Cache: normalized URL -> MediaCacheEntry
     private readonly ConcurrentDictionary<string, MediaCacheEntry> _cache = new();
@@ -36,11 +37,8 @@ public class MediaCacheService
     private const int MetadataTimeoutMs = 15_000; // 15 seconds for metadata check
     private static readonly TimeSpan FailureCacheTtl = TimeSpan.FromHours(1);
 
-    // Random pacing between downloads to avoid TikTok rate-limiting. Tuned to keep
-    // bulk-imports of ~100 videos completing in 15-30 minutes while staying under
-    // TikTok's anti-bot threshold.
-    private const int InterDownloadDelayMinMs = 2_500;
-    private const int InterDownloadDelayMaxMs = 5_500;
+    // Inter-download pacing is now read live from PacingSettings (configurable via /pacing).
+    // Defaults are PacingSettings.DefaultMinDelayMs / DefaultMaxDelayMs.
 
     /// <summary>
     /// Callback invoked when media caching completes. Parameters: (messageId, url, entry).
@@ -53,12 +51,13 @@ public class MediaCacheService
     /// </summary>
     public Action<Guid, string, string>? OnMediaFailed { get; set; }
 
-    public MediaCacheService(ILogger<MediaCacheService> logger, IWebHostEnvironment env, LinkPreviewSettingsService settings, LinkPreviewService linkPreviewService)
+    public MediaCacheService(ILogger<MediaCacheService> logger, IWebHostEnvironment env, LinkPreviewSettingsService settings, LinkPreviewService linkPreviewService, PacingSettings pacing)
     {
         _logger = logger;
         _env = env;
         _settings = settings;
         _linkPreviewService = linkPreviewService;
+        _pacing = pacing;
         DetectYtDlp();
         EnsureCacheDirectory();
     }
@@ -209,8 +208,10 @@ public class MediaCacheService
                 // queued task can't start until we've waited the cooldown.
                 try
                 {
-                    var delay = Random.Shared.Next(InterDownloadDelayMinMs, InterDownloadDelayMaxMs);
-                    await Task.Delay(delay);
+                    var min = _pacing.MinDelayMs;
+                    var max = Math.Max(min + 1, _pacing.MaxDelayMs + 1); // Random.Next is exclusive on max
+                    var delay = min == 0 && max == 1 ? 0 : Random.Shared.Next(min, max);
+                    if (delay > 0) await Task.Delay(delay);
                 }
                 catch { /* don't block release on a delay error */ }
                 _downloadSemaphore.Release();
