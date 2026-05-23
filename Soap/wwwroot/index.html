@@ -80,8 +80,13 @@
     overflow: auto;
   }
   .toast.warn { border-color: var(--warn); color: var(--text); }
+  .panels {
+    padding: 10px 20px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
   details.cookie-panel {
-    margin-top: 10px;
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 8px;
@@ -207,13 +212,15 @@
     <button id="scrape">Scrape reposts</button>
   </div>
   <div class="status" id="status">
-    <span class="pill"><span class="dot ready"></span> <span id="ct-ready">0</span> ready</span>
+    <span class="pill"><span class="dot ready"></span> <span id="ct-ready">0</span> backed up</span>
     <span class="pill"><span class="dot downloading"></span> <span id="ct-downloading">0</span> downloading</span>
     <span class="pill"><span class="dot queued"></span> <span id="ct-queued">0</span> queued</span>
     <span class="pill"><span class="dot failed"></span> <span id="ct-failed">0</span> failed</span>
   </div>
   <div id="toast" class="toast" hidden></div>
-  <details id="bookmarklet-panel" class="cookie-panel" open>
+</header>
+<section class="panels">
+  <details id="bookmarklet-panel" class="cookie-panel">
     <summary>
       <span>Bookmarklet (recommended for reposts)</span>
       <span class="cookie-status">drag the button to your bookmarks bar</span>
@@ -234,7 +241,7 @@
       </p>
     </div>
   </details>
-  <details id="import-panel" class="cookie-panel" open>
+  <details id="import-panel" class="cookie-panel">
     <summary>
       <span>Paste URLs</span>
       <span class="cookie-status">paste here after running the bookmarklet</span>
@@ -272,10 +279,10 @@
       </div>
     </div>
   </details>
-</header>
+</section>
 <main>
   <div id="grid" class="grid"></div>
-  <div id="empty" class="empty" hidden>No reposts yet. Enter a TikTok username above and click Scrape.</div>
+  <div id="empty" class="empty" hidden>No reposts yet. Use the bookmarklet (see panel above) to collect URLs from TikTok, then paste them in.</div>
 </main>
 <script>
 const $ = id => document.getElementById(id);
@@ -317,6 +324,13 @@ async function refreshGrid() {
   }
 }
 
+const STATUS_LABEL = {
+  Queued: 'Queued',
+  Downloading: 'Downloading',
+  Ready: 'Backed up',
+  Failed: 'Failed'
+};
+
 function renderCard(item) {
   const card = document.createElement('div');
   card.className = 'card';
@@ -327,7 +341,8 @@ function renderCard(item) {
 
   const badge = document.createElement('span');
   badge.className = 'badge';
-  badge.innerHTML = `<span class="dot ${item.status.toLowerCase()}"></span> ${item.status}`;
+  const label = STATUS_LABEL[item.status] || item.status;
+  badge.innerHTML = `<span class="dot ${item.status.toLowerCase()}"></span> ${label}`;
   media.appendChild(badge);
 
   if (item.status === 'Ready' && item.cachedMediaUrl) {
@@ -633,7 +648,14 @@ $('import-paste').addEventListener('click', async () => {
 
 // Initial load
 refreshCookieState();
-refreshStatus().then(() => refreshGrid()).then(ensurePolling);
+refreshStatus().then(s => {
+  // First-time user (nothing imported yet)? Show the instructions panels.
+  if (s && s.total === 0) {
+    $('bookmarklet-panel').open = true;
+    $('import-panel').open = true;
+  }
+  return refreshGrid();
+}).then(ensurePolling);
 </script>
 </body>
 </html>
