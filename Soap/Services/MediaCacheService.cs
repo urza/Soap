@@ -22,8 +22,9 @@ public class MediaCacheService
     // Dedup in-flight downloads
     private readonly ConcurrentDictionary<string, byte> _inFlight = new();
 
-    // Limit concurrent downloads to avoid rate limiting
-    private readonly SemaphoreSlim _downloadSemaphore = new(2);
+    // Serialize downloads — TikTok rate-limits aggressively, so we run one at a
+    // time and add a small random delay between them (see InterDownloadDelay* below).
+    private readonly SemaphoreSlim _downloadSemaphore = new(1);
 
     /// <summary>Whether yt-dlp is available on this system.</summary>
     public static bool IsAvailable { get; private set; }
@@ -34,6 +35,12 @@ public class MediaCacheService
     private const int DownloadTimeoutMs = 300_000; // 5 minutes
     private const int MetadataTimeoutMs = 15_000; // 15 seconds for metadata check
     private static readonly TimeSpan FailureCacheTtl = TimeSpan.FromHours(1);
+
+    // Random pacing between downloads to avoid TikTok rate-limiting. Tuned to keep
+    // bulk-imports of ~100 videos completing in 15-30 minutes while staying under
+    // TikTok's anti-bot threshold.
+    private const int InterDownloadDelayMinMs = 2_500;
+    private const int InterDownloadDelayMaxMs = 5_500;
 
     /// <summary>
     /// Callback invoked when media caching completes. Parameters: (messageId, url, entry).
@@ -57,6 +64,14 @@ public class MediaCacheService
     }
 
     private string CacheDirectory => Path.Combine(_env.ContentRootPath, "Data", "media-cache");
+
+    /// <summary>
+    /// Path to the optional cookies file. If present, passed as --cookies to yt-dlp
+    /// so sites that require auth (TikTok, age-gated YouTube, etc.) can be downloaded.
+    /// </summary>
+    private string CookiesPath => Path.Combine(_env.ContentRootPath, "Data", "tiktok-cookies.txt");
+
+    private string CookiesArg() => File.Exists(CookiesPath) ? $"--cookies \"{CookiesPath}\" " : "";
 
     private void EnsureCacheDirectory() => Directory.CreateDirectory(CacheDirectory);
 
@@ -190,6 +205,14 @@ public class MediaCacheService
             }
             finally
             {
+                // Pace the next download — held inside the semaphore so the next
+                // queued task can't start until we've waited the cooldown.
+                try
+                {
+                    var delay = Random.Shared.Next(InterDownloadDelayMinMs, InterDownloadDelayMaxMs);
+                    await Task.Delay(delay);
+                }
+                catch { /* don't block release on a delay error */ }
                 _downloadSemaphore.Release();
                 _inFlight.TryRemove(url, out _);
             }
@@ -235,7 +258,8 @@ public class MediaCacheService
         var outputPathAudio = Path.Combine(CacheDirectory, $"{hash}.mp3");
 
         // Try video download first — prefer H.264 for browser compatibility
-        var videoArgs = $"--no-playlist -S \"vcodec:h264\" -f \"bestvideo[height<=720]+bestaudio/best[height<=720]/best\" --merge-output-format mp4 -o \"{outputPathMp4}\" -- \"{url}\"";
+        var cookies = CookiesArg();
+        var videoArgs = $"{cookies}--no-playlist -S \"vcodec:h264\" -f \"bestvideo[height<=720]+bestaudio/best[height<=720]/best\" --merge-output-format mp4 -o \"{outputPathMp4}\" -- \"{url}\"";
         var (exitCode, stderr) = await RunYtDlpAsync(videoArgs, DownloadTimeoutMs);
 
         if (exitCode != 0)
@@ -245,7 +269,7 @@ public class MediaCacheService
             var videoStderr = stderr;
             TryDeleteFile(outputPathMp4);
 
-            var audioArgs = $"--no-playlist -x --audio-format mp3 --audio-quality 2 -o \"{outputPathAudio}\" -- \"{url}\"";
+            var audioArgs = $"{cookies}--no-playlist -x --audio-format mp3 --audio-quality 2 -o \"{outputPathAudio}\" -- \"{url}\"";
             (exitCode, stderr) = await RunYtDlpAsync(audioArgs, DownloadTimeoutMs);
 
             if (exitCode != 0)
@@ -394,7 +418,7 @@ public class MediaCacheService
     {
         // RunYtDlpAsync returns stdout on success, stderr on failure.
         var (exitCode, output) = await RunYtDlpAsync(
-            $"--print duration --no-playlist -- \"{url}\"", MetadataTimeoutMs);
+            $"{CookiesArg()}--print duration --no-playlist -- \"{url}\"", MetadataTimeoutMs);
 
         if (exitCode != 0)
             return (null, "yt-dlp metadata failed: " + SummariseYtDlpError(output));
