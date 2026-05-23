@@ -202,6 +202,20 @@
   .empty {
     text-align: center; padding: 60px 20px; color: var(--muted);
   }
+  .error {
+    background: rgba(231,76,60,.12);
+    border: 1px solid rgba(231,76,60,.35);
+    border-radius: 6px;
+    padding: 6px 8px;
+    margin-top: 6px;
+    color: #ff8e7f;
+    font-size: 11px;
+    font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 120px;
+    overflow: auto;
+  }
 </style>
 </head>
 <body>
@@ -216,6 +230,7 @@
     <span class="pill"><span class="dot downloading"></span> <span id="ct-downloading">0</span> downloading</span>
     <span class="pill"><span class="dot queued"></span> <span id="ct-queued">0</span> queued</span>
     <span class="pill"><span class="dot failed"></span> <span id="ct-failed">0</span> failed</span>
+    <button id="retry-failed" class="secondary" style="margin-left:auto;padding:4px 10px;font-size:12px;" hidden>Retry failed</button>
   </div>
   <div id="toast" class="toast" hidden></div>
 </header>
@@ -302,6 +317,7 @@ async function refreshStatus() {
     $('ct-downloading').textContent = s.downloading;
     $('ct-queued').textContent = s.queued;
     $('ct-failed').textContent = s.failed;
+    $('retry-failed').hidden = s.failed === 0;
     return s;
   } catch (e) {
     console.error(e);
@@ -387,6 +403,13 @@ function renderCard(item) {
   }
   body.appendChild(title);
   body.appendChild(meta);
+
+  if (item.status === 'Failed' && item.errorMessage) {
+    const err = document.createElement('div');
+    err.className = 'error';
+    err.textContent = item.errorMessage;
+    body.appendChild(err);
+  }
 
   card.appendChild(media);
   card.appendChild(body);
@@ -633,6 +656,25 @@ async function submitImport(urls) {
 
 $('import-submit').addEventListener('click', () => {
   submitImport(parseUrls($('import-input').value));
+});
+
+$('retry-failed').addEventListener('click', async () => {
+  const btn = $('retry-failed');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'retrying…';
+  try {
+    const r = await fetch('/reposts/retry-failed', { method: 'POST' });
+    const d = await r.json();
+    btn.textContent = `re-queued ${d.retried}`;
+    await refreshStatus();
+    await refreshGrid();
+    ensurePolling();
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1500);
+  } catch (e) {
+    btn.textContent = 'error';
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2000);
+  }
 });
 
 $('import-paste').addEventListener('click', async () => {

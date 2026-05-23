@@ -106,6 +106,15 @@ public class MediaCacheService
     }
 
     /// <summary>
+    /// Forgets the negative-cache entry for this URL so the next QueueDownload
+    /// will actually re-attempt instead of being skipped. No-op if absent.
+    /// </summary>
+    public void ForgetFailure(string url)
+    {
+        _failedUrls.TryRemove(url, out _);
+    }
+
+    /// <summary>
     /// Checks memory cache, then disk. Populates memory cache on disk hit.
     /// </summary>
     private MediaCacheEntry? GetOrLoadCachedMedia(string url)
@@ -161,7 +170,7 @@ public class MediaCacheService
             await _downloadSemaphore.WaitAsync();
             try
             {
-                var result = await DownloadMediaAsync(url);
+                var (result, reason) = await DownloadMediaAsync(url);
                 if (result != null)
                 {
                     _cache[url] = result;
@@ -170,7 +179,7 @@ public class MediaCacheService
                 else
                 {
                     _failedUrls[url] = DateTime.UtcNow;
-                    OnMediaFailed?.Invoke(messageId, url, "yt-dlp could not download this URL");
+                    OnMediaFailed?.Invoke(messageId, url, reason ?? "yt-dlp could not download this URL");
                 }
             }
             catch (Exception ex)
@@ -187,7 +196,7 @@ public class MediaCacheService
         });
     }
 
-    private async Task<MediaCacheEntry?> DownloadMediaAsync(string url)
+    private async Task<(MediaCacheEntry? Entry, string? Reason)> DownloadMediaAsync(string url)
     {
         var sw = Stopwatch.StartNew();
         var hash = ComputeHash(url);
@@ -199,7 +208,7 @@ public class MediaCacheService
             var ext = Path.GetExtension(existingFile);
             var type = IsVideoExtension(ext) ? CachedMediaType.Video : CachedMediaType.Audio;
             _logger.LogDebug("Media cache hit (file exists): {Url}", url);
-            return new MediaCacheEntry($"/media-cache/{hash}{ext}", type, 0);
+            return (new MediaCacheEntry($"/media-cache/{hash}{ext}", type, 0), null);
         }
 
         // Route Spotify URLs to spotdl
@@ -207,18 +216,18 @@ public class MediaCacheService
             return await DownloadSpotifyAsync(url, hash, sw);
 
         // Step 1: Get metadata — duration + whether video is available
-        var metadata = await GetMetadataAsync(url);
+        var (metadata, metaReason) = await GetMetadataAsync(url);
         if (metadata == null)
         {
-            _logger.LogDebug("yt-dlp cannot handle {Url}, skipping", url);
-            return null;
+            _logger.LogDebug("yt-dlp cannot handle {Url}: {Reason}", url, metaReason);
+            return (null, metaReason ?? "yt-dlp could not read metadata");
         }
 
         if (metadata.Duration > MaxDurationSeconds)
         {
-            _logger.LogDebug("Skipping {Url}: duration {Duration}s exceeds {Max}s limit",
-                url, metadata.Duration, MaxDurationSeconds);
-            return null;
+            var msg = $"video too long ({(int)metadata.Duration}s, max {MaxDurationSeconds}s)";
+            _logger.LogDebug("Skipping {Url}: {Msg}", url, msg);
+            return (null, msg);
         }
 
         // Step 2: Download — try video first, fall back to audio-only
@@ -233,6 +242,7 @@ public class MediaCacheService
         {
             // Video download failed — try audio-only
             _logger.LogDebug("Video download failed for {Url}, trying audio-only: {Err}", url, TruncateLog(stderr));
+            var videoStderr = stderr;
             TryDeleteFile(outputPathMp4);
 
             var audioArgs = $"--no-playlist -x --audio-format mp3 --audio-quality 2 -o \"{outputPathAudio}\" -- \"{url}\"";
@@ -243,7 +253,9 @@ public class MediaCacheService
                 _logger.LogWarning("yt-dlp download failed for {Url} (exit: {Code}): {Stderr}",
                     url, exitCode, TruncateLog(stderr));
                 TryDeleteFile(outputPathAudio);
-                return null;
+                // Prefer the audio stderr (last attempt) but fall back to video if audio gave nothing.
+                var detail = !string.IsNullOrWhiteSpace(stderr) ? stderr : videoStderr;
+                return (null, "yt-dlp download failed: " + SummariseYtDlpError(detail));
             }
         }
 
@@ -252,7 +264,7 @@ public class MediaCacheService
         if (actualPath == null)
         {
             _logger.LogWarning("yt-dlp completed but output file not found for {Url}", url);
-            return null;
+            return (null, "yt-dlp exited cleanly but no output file was produced");
         }
 
         var actualExt = Path.GetExtension(actualPath);
@@ -289,29 +301,29 @@ public class MediaCacheService
         var fileSize = new FileInfo(actualPath).Length;
         if (fileSize > MaxFileSizeBytes)
         {
-            _logger.LogWarning("Cached file too large ({SizeMB}MB), deleting: {Url}",
-                fileSize / (1024 * 1024), url);
+            var msg = $"file too large ({fileSize / (1024 * 1024)}MB, max {MaxFileSizeBytes / (1024 * 1024)}MB)";
+            _logger.LogWarning("Cached file too large for {Url}: {Msg}", url, msg);
             TryDeleteFile(actualPath);
-            return null;
+            return (null, msg);
         }
 
         _logger.LogInformation("Cached media: {Url} -> {File} ({SizeKB}KB, {Duration}s, {Type}, {ElapsedMs}ms)",
             url, Path.GetFileName(actualPath), fileSize / 1024,
             (int)metadata.Duration, mediaType, sw.ElapsedMilliseconds);
 
-        return new MediaCacheEntry(localUrl, mediaType, (int)metadata.Duration);
+        return (new MediaCacheEntry(localUrl, mediaType, (int)metadata.Duration), null);
     }
 
     /// <summary>
     /// Downloads a Spotify track by searching YouTube for the song title + artist via yt-dlp.
     /// Uses the OG metadata from LinkPreviewService to build the search query.
     /// </summary>
-    private async Task<MediaCacheEntry?> DownloadSpotifyAsync(string url, string hash, Stopwatch sw)
+    private async Task<(MediaCacheEntry? Entry, string? Reason)> DownloadSpotifyAsync(string url, string hash, Stopwatch sw)
     {
         if (!IsAvailable)
         {
             _logger.LogDebug("yt-dlp not available, cannot download Spotify via YouTube search");
-            return null;
+            return (null, "yt-dlp not available");
         }
 
         // Get OG metadata for song title + artist
@@ -319,14 +331,10 @@ public class MediaCacheService
         string? searchQuery = null;
 
         if (preview != null && !string.IsNullOrEmpty(preview.Title))
-        {
-            // OG title is usually "Song Name - Artist" or "Song Name · Artist"
             searchQuery = preview.Title;
-        }
 
         if (string.IsNullOrEmpty(searchQuery))
         {
-            // OG scrape hasn't completed yet or failed — wait briefly and retry
             await Task.Delay(3000);
             preview = _linkPreviewService?.GetCachedPreview(url);
             searchQuery = preview?.Title;
@@ -335,15 +343,12 @@ public class MediaCacheService
         if (string.IsNullOrEmpty(searchQuery))
         {
             _logger.LogWarning("No title found for Spotify URL {Url}, cannot search YouTube", url);
-            return null;
+            return (null, "no OG title for Spotify URL — cannot search YouTube");
         }
 
-        // Clean up the title — remove "song on Spotify" suffix if present
         searchQuery = searchQuery.Replace(" | Spotify", "").Replace(" - song by ", " ").Replace(" on Spotify", "").Trim();
-
         _logger.LogInformation("Spotify -> YouTube search: \"{Query}\" for {Url}", searchQuery, url);
 
-        // Use yt-dlp's YouTube search to find and download audio
         var outputPath = Path.Combine(CacheDirectory, $"{hash}.mp3");
         var args = $"--no-playlist -x --audio-format mp3 --audio-quality 2 \"ytsearch1:{searchQuery}\" -o \"{outputPath}\"";
         var (exitCode, stderr) = await RunYtDlpAsync(args, DownloadTimeoutMs);
@@ -353,22 +358,23 @@ public class MediaCacheService
             _logger.LogWarning("yt-dlp YouTube search failed for Spotify {Url} (query=\"{Query}\", exit={Code}): {Err}",
                 url, searchQuery, exitCode, TruncateLog(stderr));
             TryDeleteFile(outputPath);
-            return null;
+            return (null, "Spotify YouTube-search failed: " + SummariseYtDlpError(stderr));
         }
 
         var actualPath = FindOutputFile(hash);
         if (actualPath == null)
         {
             _logger.LogWarning("yt-dlp completed but output file not found for Spotify {Url}", url);
-            return null;
+            return (null, "yt-dlp exited cleanly but no output file was produced");
         }
 
         var fileSize = new FileInfo(actualPath).Length;
         if (fileSize > MaxFileSizeBytes)
         {
-            _logger.LogWarning("Spotify cached file too large ({SizeMB}MB), deleting: {Url}", fileSize / (1024 * 1024), url);
+            var msg = $"file too large ({fileSize / (1024 * 1024)}MB, max {MaxFileSizeBytes / (1024 * 1024)}MB)";
+            _logger.LogWarning("Spotify cached file too large for {Url}: {Msg}", url, msg);
             TryDeleteFile(actualPath);
-            return null;
+            return (null, msg);
         }
 
         var actualExt = Path.GetExtension(actualPath);
@@ -377,26 +383,50 @@ public class MediaCacheService
         _logger.LogInformation("Cached Spotify: {Url} -> {File} ({SizeKB}KB, \"{Query}\", {ElapsedMs}ms)",
             url, Path.GetFileName(actualPath), fileSize / 1024, searchQuery, sw.ElapsedMilliseconds);
 
-        return new MediaCacheEntry(localUrl, CachedMediaType.Audio, 0);
+        return (new MediaCacheEntry(localUrl, CachedMediaType.Audio, 0), null);
     }
 
     /// <summary>
-    /// Gets duration via yt-dlp metadata query. Returns null if yt-dlp can't handle the URL.
+    /// Gets duration via yt-dlp metadata query. Returns (null, reason) when the URL
+    /// can't be probed; (meta, null) on success.
     /// </summary>
-    private async Task<MediaMetadata?> GetMetadataAsync(string url)
+    private async Task<(MediaMetadata? Meta, string? Reason)> GetMetadataAsync(string url)
     {
-        var (exitCode, stdout) = await RunYtDlpAsync(
+        // RunYtDlpAsync returns stdout on success, stderr on failure.
+        var (exitCode, output) = await RunYtDlpAsync(
             $"--print duration --no-playlist -- \"{url}\"", MetadataTimeoutMs);
 
-        if (exitCode != 0 || string.IsNullOrWhiteSpace(stdout))
-            return null;
+        if (exitCode != 0)
+            return (null, "yt-dlp metadata failed: " + SummariseYtDlpError(output));
 
-        var line = stdout.Trim().Split('\n')[0].Trim();
+        if (string.IsNullOrWhiteSpace(output))
+            return (null, "yt-dlp returned no metadata");
+
+        var line = output.Trim().Split('\n')[0].Trim();
         if (!double.TryParse(line, System.Globalization.NumberStyles.Float,
                 System.Globalization.CultureInfo.InvariantCulture, out var duration))
-            return null;
+            return (null, $"could not parse duration from yt-dlp output: \"{TruncateLog(line, 120)}\"");
 
-        return new MediaMetadata(duration);
+        return (new MediaMetadata(duration), null);
+    }
+
+    /// <summary>
+    /// Strip the verbose log/warning prefixes yt-dlp emits and pick the most
+    /// informative line so the UI doesn't drown in noise.
+    /// </summary>
+    private static string SummariseYtDlpError(string stderr)
+    {
+        if (string.IsNullOrWhiteSpace(stderr))
+            return "no stderr output";
+
+        var lines = stderr.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        // Prefer the first ERROR: line; fall back to the last non-empty line.
+        var error = lines.FirstOrDefault(l => l.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase));
+        var summary = error ?? lines.LastOrDefault() ?? stderr.Trim();
+        // Strip the verbose "[generic]" / "[tiktok]" / "WARNING:" prefixes that aren't useful in a UI.
+        if (summary.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase))
+            summary = summary[6..].TrimStart();
+        return TruncateLog(summary, 400);
     }
 
     /// <summary>

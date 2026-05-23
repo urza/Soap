@@ -167,6 +167,23 @@ app.MapGet("/reposts/status", (RepostStore store) =>
     return Results.Ok(new { queued = q, downloading = d, ready = r, failed = f, total = q + d + r + f });
 });
 
+app.MapPost("/reposts/retry-failed", (RepostStore store, MediaCacheService mediaSvc, PreviewCoordinator coord) =>
+{
+    var failed = store.GetAll().Where(e => e.Status == RepostStatus.Failed).ToList();
+    foreach (var e in failed)
+    {
+        mediaSvc.ForgetFailure(e.Url);
+        store.Update(e.Url, x =>
+        {
+            x.Status = RepostStatus.Queued;
+            x.ErrorMessage = null;
+            x.CompletedAt = null;
+        });
+        coord.Queue(e.Url, includeMedia: true);
+    }
+    return Results.Ok(new { retried = failed.Count });
+});
+
 // --- Cookie management ---
 
 string CookiesPath() => Path.Combine(app.Environment.ContentRootPath, "Data", "tiktok-cookies.txt");
