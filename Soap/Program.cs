@@ -48,7 +48,69 @@ var coordinator = app.Services.GetRequiredService<PreviewCoordinator>();
 var repostStore = app.Services.GetRequiredService<RepostStore>();
 var mediaCache = app.Services.GetRequiredService<MediaCacheService>();
 
+// Resume any work that was in flight when the previous instance stopped.
+// Downloading entries get reset to Queued (the new semantics reserve Downloading
+// for "yt-dlp actively running"). Both Queued and just-reset entries are re-fed
+// to the coordinator so they actually get processed — otherwise they'd sit
+// Queued forever until the user clicks something.
+var pending = repostStore.GetAll()
+    .Where(e => e.Status == RepostStatus.Queued || e.Status == RepostStatus.Downloading)
+    .ToList();
+foreach (var e in pending)
+{
+    if (e.Status == RepostStatus.Downloading)
+        repostStore.Update(e.Url, x => x.Status = RepostStatus.Queued);
+    coordinator.Queue(e.Url, includeMedia: true);
+}
+if (pending.Count > 0)
+    app.Logger.LogInformation("Resumed {Count} pending entries on startup", pending.Count);
+
+// Backfill local poster JPEGs for any Ready entries that don't have one yet
+// (e.g. backed up before this feature existed, or whose stored ThumbnailUrl is a
+// remote OG URL that won't load in a browser). Runs in the background so it
+// doesn't delay app start; entries update individually as their poster lands.
+_ = Task.Run(async () =>
+{
+    var needsPoster = repostStore.GetAll()
+        .Where(e => e.Status == RepostStatus.Ready
+                 && !string.IsNullOrEmpty(e.CachedMediaUrl)
+                 && (string.IsNullOrEmpty(e.ThumbnailUrl) || !e.ThumbnailUrl.StartsWith("/media-cache/")))
+        .ToList();
+
+    if (needsPoster.Count == 0) return;
+    app.Logger.LogInformation("Backfilling posters for {Count} Ready entries", needsPoster.Count);
+
+    int generated = 0, skipped = 0;
+    foreach (var e in needsPoster)
+    {
+        try
+        {
+            var poster = await mediaCache.EnsurePosterForAsync(e.Url);
+            if (poster != null)
+            {
+                repostStore.Update(e.Url, x => x.ThumbnailUrl = poster);
+                generated++;
+            }
+            else
+            {
+                skipped++;
+            }
+        }
+        catch (Exception ex)
+        {
+            app.Logger.LogDebug(ex, "Poster backfill failed for {Url}", e.Url);
+            skipped++;
+        }
+    }
+    app.Logger.LogInformation("Poster backfill done: generated={Generated} skipped={Skipped}", generated, skipped);
+});
+
 // Wire repost-store status updates onto the existing coordinator events.
+//
+// IMPORTANT: status only flips to Downloading when yt-dlp actually starts on a
+// URL (OnMediaDownloadStarting below). OG scraping is fast and runs for every
+// URL in parallel — so if we flipped on OG-ready, every entry would look like
+// "Downloading" the moment retry-failed fired. That was confusing.
 coordinator.OnLinkPreviewReady += (_, url, preview) =>
 {
     repostStore.Update(url, e =>
@@ -59,6 +121,14 @@ coordinator.OnLinkPreviewReady += (_, url, preview) =>
             e.Description = preview.Description;
             e.ThumbnailUrl = preview.ImageUrl;
         }
+        // Don't touch e.Status here — let OnMediaDownloadStarting do it.
+    });
+};
+
+mediaCache.OnMediaDownloadStarting = (_, url) =>
+{
+    repostStore.Update(url, e =>
+    {
         if (e.Status == RepostStatus.Queued)
             e.Status = RepostStatus.Downloading;
     });
@@ -71,6 +141,9 @@ coordinator.OnMediaCacheReady += (_, url, preview) =>
         e.CachedMediaUrl = preview.CachedMediaUrl;
         e.MediaType = preview.MediaType;
         e.MediaDurationSeconds = preview.MediaDurationSeconds;
+        // Prefer the locally-generated poster over the OG image URL (which usually rots).
+        if (!string.IsNullOrEmpty(preview.PosterUrl))
+            e.ThumbnailUrl = preview.PosterUrl;
         e.Status = RepostStatus.Ready;
         e.CompletedAt = DateTime.UtcNow;
         e.ErrorMessage = null;
@@ -170,10 +243,15 @@ app.MapPost("/reposts/bulk", (BulkImportRequest req, RepostStore store, PreviewC
     });
 }).RequireCors(BookmarkletCors);
 
-app.MapGet("/reposts/status", (RepostStore store) =>
+app.MapGet("/reposts/status", (RepostStore store, MediaCacheService svc) =>
 {
     var (q, d, r, f) = store.GetCounts();
-    return Results.Ok(new { queued = q, downloading = d, ready = r, failed = f, total = q + d + r + f });
+    var active = svc.GetActiveDownloads()
+        .Select(url => store.Get(url))
+        .Where(e => e != null)
+        .Select(e => new { id = e!.Id, url = e.Url, title = e.Title })
+        .ToList();
+    return Results.Ok(new { queued = q, downloading = d, ready = r, failed = f, total = q + d + r + f, active });
 });
 
 app.MapGet("/pacing", (PacingSettings p) =>

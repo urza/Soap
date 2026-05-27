@@ -41,6 +41,7 @@ public class PreviewCoordinator
             preview.CachedMediaUrl = entry.LocalUrl;
             preview.MediaType = entry.MediaType;
             preview.MediaDurationSeconds = entry.DurationSeconds;
+            preview.PosterUrl = entry.PosterUrl;
             OnMediaCacheReady?.Invoke(msgId, url, preview);
         };
     }
@@ -121,6 +122,7 @@ public class PreviewCoordinator
             preview.CachedMediaUrl = cached.LocalUrl;
             preview.MediaType = cached.MediaType;
             preview.MediaDurationSeconds = cached.DurationSeconds;
+            preview.PosterUrl = cached.PosterUrl;
             return preview;
         }
 

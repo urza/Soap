@@ -15,6 +15,9 @@ public class LinkPreview
     public string? CachedMediaUrl { get; set; }
     public CachedMediaType? MediaType { get; set; }
     public int? MediaDurationSeconds { get; set; }
+    /// <summary>Local thumbnail (JPEG frame from the cached video). Reliable replacement
+    /// for the OG image URL, which usually rots / fails to load in a browser.</summary>
+    public string? PosterUrl { get; set; }
 }
 
 public enum CachedMediaType

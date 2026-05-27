@@ -20,8 +20,12 @@ public class MediaCacheService
     // Failed URLs: don't retry URLs that yt-dlp can't handle (TTL: 1 hour)
     private readonly ConcurrentDictionary<string, DateTime> _failedUrls = new();
 
-    // Dedup in-flight downloads
+    // Dedup queued downloads (everything between QueueDownload and the finally block).
     private readonly ConcurrentDictionary<string, byte> _inFlight = new();
+
+    // URLs that have crossed the semaphore — yt-dlp is actively running on them.
+    // With _downloadSemaphore=1 this set holds at most one entry at a time.
+    private readonly ConcurrentDictionary<string, DateTime> _active = new();
 
     // Serialize downloads — TikTok rate-limits aggressively, so we run one at a
     // time and add a small random delay between them (see InterDownloadDelay* below).
@@ -50,6 +54,19 @@ public class MediaCacheService
     /// limits, or threw). Parameters: (messageId, url, reason).
     /// </summary>
     public Action<Guid, string, string>? OnMediaFailed { get; set; }
+
+    /// <summary>
+    /// Callback invoked when yt-dlp is about to start downloading this URL (i.e. has
+    /// crossed the concurrency semaphore). Parameters: (messageId, url).
+    /// Use this to distinguish "queued, waiting for a slot" from "actively running".
+    /// </summary>
+    public Action<Guid, string>? OnMediaDownloadStarting { get; set; }
+
+    /// <summary>
+    /// URLs whose yt-dlp run is currently executing. With concurrency=1 this is at
+    /// most one URL — used by the UI to surface "now downloading X" feedback.
+    /// </summary>
+    public IReadOnlyCollection<string> GetActiveDownloads() => _active.Keys.ToArray();
 
     public MediaCacheService(ILogger<MediaCacheService> logger, IWebHostEnvironment env, LinkPreviewSettingsService settings, LinkPreviewService linkPreviewService, PacingSettings pacing)
     {
@@ -143,7 +160,9 @@ public class MediaCacheService
         {
             var ext = Path.GetExtension(diskFile);
             var type = IsVideoExtension(ext) ? CachedMediaType.Video : CachedMediaType.Audio;
-            var entry = new MediaCacheEntry($"/media-cache/{hash}{ext}", type, 0);
+            var posterPath = Path.Combine(CacheDirectory, $"{hash}.jpg");
+            var posterUrl = File.Exists(posterPath) ? $"/media-cache/{hash}.jpg" : null;
+            var entry = new MediaCacheEntry($"/media-cache/{hash}{ext}", type, 0, posterUrl);
             _cache[url] = entry;
             return entry;
         }
@@ -182,6 +201,8 @@ public class MediaCacheService
         _ = Task.Run(async () =>
         {
             await _downloadSemaphore.WaitAsync();
+            _active[url] = DateTime.UtcNow;
+            OnMediaDownloadStarting?.Invoke(messageId, url);
             try
             {
                 var (result, reason) = await DownloadMediaAsync(url);
@@ -204,6 +225,7 @@ public class MediaCacheService
             }
             finally
             {
+                _active.TryRemove(url, out _);
                 // Pace the next download — held inside the semaphore so the next
                 // queued task can't start until we've waited the cooldown.
                 try
@@ -232,7 +254,10 @@ public class MediaCacheService
             var ext = Path.GetExtension(existingFile);
             var type = IsVideoExtension(ext) ? CachedMediaType.Video : CachedMediaType.Audio;
             _logger.LogDebug("Media cache hit (file exists): {Url}", url);
-            return (new MediaCacheEntry($"/media-cache/{hash}{ext}", type, 0), null);
+            // Backfill the poster if missing — useful for entries downloaded before
+            // this service generated posters.
+            var poster = type == CachedMediaType.Video ? await EnsurePosterForAsync(url) : null;
+            return (new MediaCacheEntry($"/media-cache/{hash}{ext}", type, 0, poster), null);
         }
 
         // Route Spotify URLs to spotdl
@@ -332,11 +357,65 @@ public class MediaCacheService
             return (null, msg);
         }
 
-        _logger.LogInformation("Cached media: {Url} -> {File} ({SizeKB}KB, {Duration}s, {Type}, {ElapsedMs}ms)",
-            url, Path.GetFileName(actualPath), fileSize / 1024,
-            (int)metadata.Duration, mediaType, sw.ElapsedMilliseconds);
+        // Generate a poster JPEG so the gallery has a thumbnail that actually loads
+        // (TikTok's OG image URLs rot quickly). Best-effort: a failure here doesn't
+        // fail the whole download.
+        var posterUrl = mediaType == CachedMediaType.Video
+            ? await GeneratePosterAsync(actualPath, hash)
+            : null;
 
-        return (new MediaCacheEntry(localUrl, mediaType, (int)metadata.Duration), null);
+        _logger.LogInformation("Cached media: {Url} -> {File} ({SizeKB}KB, {Duration}s, {Type}, {ElapsedMs}ms, poster={HasPoster})",
+            url, Path.GetFileName(actualPath), fileSize / 1024,
+            (int)metadata.Duration, mediaType, sw.ElapsedMilliseconds, posterUrl != null);
+
+        return (new MediaCacheEntry(localUrl, mediaType, (int)metadata.Duration, posterUrl), null);
+    }
+
+    /// <summary>
+    /// Extracts a frame at ~0.5s and writes it as {hash}.jpg next to the cached video.
+    /// Returns the public URL path or null on failure.
+    /// </summary>
+    private async Task<string?> GeneratePosterAsync(string videoPath, string hash)
+    {
+        var posterPath = Path.Combine(CacheDirectory, $"{hash}.jpg");
+        if (File.Exists(posterPath))
+            return $"/media-cache/{hash}.jpg";
+
+        try
+        {
+            // -ss before -i = fast seek (less accurate but fast); -frames:v 1 = one frame;
+            // -vf scale = constrain width to 720 preserving aspect; -q:v 3 = good quality.
+            var args = $"-y -ss 0.5 -i \"{videoPath}\" -frames:v 1 -vf scale=720:-2 -q:v 3 \"{posterPath}\"";
+            var exit = await RunProcessAsync("ffmpeg", args, 30_000);
+            if (exit == 0 && File.Exists(posterPath))
+                return $"/media-cache/{hash}.jpg";
+            _logger.LogDebug("ffmpeg poster generation failed for {Video} (exit={Code})", videoPath, exit);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Poster generation threw for {Video}", videoPath);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Idempotent backfill: if the cached video file exists and the poster doesn't,
+    /// generate the poster. Returns the poster URL (newly generated or already there)
+    /// or null if neither the video nor a new poster can be produced.
+    /// </summary>
+    public async Task<string?> EnsurePosterForAsync(string url)
+    {
+        var hash = ComputeHash(url);
+        var posterFile = Path.Combine(CacheDirectory, $"{hash}.jpg");
+        if (File.Exists(posterFile))
+            return $"/media-cache/{hash}.jpg";
+
+        var videoFile = FindOutputFile(hash);
+        if (videoFile == null) return null;
+        var ext = Path.GetExtension(videoFile);
+        if (!IsVideoExtension(ext)) return null; // audio-only — no poster
+
+        return await GeneratePosterAsync(videoFile, hash);
     }
 
     /// <summary>
@@ -582,4 +661,4 @@ public class MediaCacheService
     private record MediaMetadata(double Duration);
 }
 
-public record MediaCacheEntry(string LocalUrl, CachedMediaType MediaType, int DurationSeconds);
+public record MediaCacheEntry(string LocalUrl, CachedMediaType MediaType, int DurationSeconds, string? PosterUrl = null);

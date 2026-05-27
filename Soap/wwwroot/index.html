@@ -218,6 +218,35 @@
   .empty {
     text-align: center; padding: 60px 20px; color: var(--muted);
   }
+  .active-banner {
+    margin: 0 0 14px;
+    padding: 10px 14px;
+    background: var(--panel);
+    border: 1px solid var(--warn);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 13px;
+  }
+  .active-banner .spinner {
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    border: 2px solid rgba(245,166,35,.25);
+    border-top-color: var(--warn);
+    animation: spin .9s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .active-banner .what {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .active-banner a { color: var(--text); text-decoration: none; }
+  .active-banner a:hover { text-decoration: underline; }
+  .active-banner .label { color: var(--muted); }
   .error {
     background: rgba(231,76,60,.12);
     border: 1px solid rgba(231,76,60,.35);
@@ -339,6 +368,11 @@
   </details>
 </section>
 <main>
+  <div id="active-banner" class="active-banner" hidden>
+    <span class="spinner"></span>
+    <span class="what"><span class="label">Now downloading:</span> <span id="active-what"></span></span>
+    <span id="active-progress" class="label"></span>
+  </div>
   <div id="grid" class="grid"></div>
   <div id="empty" class="empty" hidden>No reposts yet. Use the bookmarklet (see panel above) to collect URLs from TikTok, then paste them in.</div>
 </main>
@@ -361,6 +395,24 @@ async function refreshStatus() {
     $('ct-queued').textContent = s.queued;
     $('ct-failed').textContent = s.failed;
     $('retry-failed').hidden = s.failed === 0;
+
+    const banner = $('active-banner');
+    if (s.active && s.active.length > 0) {
+      const a = s.active[0];
+      const what = $('active-what');
+      what.innerHTML = '';
+      const link = document.createElement('a');
+      link.href = '/v/' + a.id;
+      link.textContent = a.title || a.url;
+      what.appendChild(link);
+      const pending = s.queued + s.downloading;
+      $('active-progress').textContent = pending > 1
+        ? `${s.ready + s.failed + 1} of ${s.ready + s.failed + pending}`
+        : '';
+      banner.hidden = false;
+    } else {
+      banner.hidden = true;
+    }
     return s;
   } catch (e) {
     console.error(e);
