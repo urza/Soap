@@ -134,6 +134,17 @@ mediaCache.OnMediaDownloadStarting = (_, url) =>
     });
 };
 
+mediaCache.OnMetadataResolved = (_, url, title, uploader) =>
+{
+    // yt-dlp gave us real metadata — overwrite anything the OG scrape produced.
+    repostStore.Update(url, e =>
+    {
+        if (!string.IsNullOrEmpty(title)) e.Title = title;
+        if (!string.IsNullOrEmpty(uploader) && string.IsNullOrEmpty(e.SourceProfile))
+            e.SourceProfile = uploader;
+    });
+};
+
 coordinator.OnMediaCacheReady += (_, url, preview) =>
 {
     repostStore.Update(url, e =>
@@ -251,7 +262,16 @@ app.MapGet("/reposts/status", (RepostStore store, MediaCacheService svc) =>
         .Where(e => e != null)
         .Select(e => new { id = e!.Id, url = e.Url, title = e.Title })
         .ToList();
-    return Results.Ok(new { queued = q, downloading = d, ready = r, failed = f, total = q + d + r + f, active });
+    var titleRefresh = new
+    {
+        pending = svc.GetPendingTitleRefreshCount(),
+        active = svc.GetActiveTitleRefreshes()
+            .Select(url => store.Get(url))
+            .Where(e => e != null)
+            .Select(e => new { id = e!.Id, url = e.Url, title = e.Title })
+            .ToList()
+    };
+    return Results.Ok(new { queued = q, downloading = d, ready = r, failed = f, total = q + d + r + f, active, titleRefresh });
 });
 
 app.MapGet("/pacing", (PacingSettings p) =>
@@ -261,6 +281,29 @@ app.MapPost("/pacing", async (PacingRequest req, PacingSettings p) =>
 {
     await p.SetAsync(req.MinMs, req.MaxMs);
     return Results.Ok(new { minMs = p.MinDelayMs, maxMs = p.MaxDelayMs });
+});
+
+// Known-bogus titles the OG scrape produces when TikTok serves its generic
+// homepage HTML to unauthenticated requests. Treated as missing for refresh.
+var bogusTitles = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+{
+    "TikTok - Make Your Day",
+};
+
+app.MapPost("/reposts/refresh-titles", (RepostStore store, MediaCacheService mediaSvc) =>
+{
+    var candidates = store.GetAll()
+        .Where(e => !string.IsNullOrEmpty(e.Url))
+        .Where(e => string.IsNullOrWhiteSpace(e.Title) || bogusTitles.Contains(e.Title!))
+        .ToList();
+
+    int queued = 0;
+    foreach (var e in candidates)
+    {
+        if (mediaSvc.QueueMetadataRefresh(Guid.NewGuid(), e.Url))
+            queued++;
+    }
+    return Results.Ok(new { queued, candidates = candidates.Count });
 });
 
 app.MapPost("/reposts/retry-failed", (RepostStore store, MediaCacheService mediaSvc, PreviewCoordinator coord) =>

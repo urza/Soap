@@ -27,6 +27,13 @@ public class MediaCacheService
     // With _downloadSemaphore=1 this set holds at most one entry at a time.
     private readonly ConcurrentDictionary<string, DateTime> _active = new();
 
+    // Separate tracking for title-refresh jobs (a metadata-only yt-dlp probe).
+    // Shares _downloadSemaphore + pacing with real downloads so we don't double
+    // the TikTok request rate, but tracked separately so the "Now downloading"
+    // UI banner only reflects actual video downloads.
+    private readonly ConcurrentDictionary<string, byte> _pendingTitleRefresh = new();
+    private readonly ConcurrentDictionary<string, DateTime> _activeTitleRefresh = new();
+
     // Serialize downloads — TikTok rate-limits aggressively, so we run one at a
     // time and add a small random delay between them (see InterDownloadDelay* below).
     private readonly SemaphoreSlim _downloadSemaphore = new(1);
@@ -63,10 +70,22 @@ public class MediaCacheService
     public Action<Guid, string>? OnMediaDownloadStarting { get; set; }
 
     /// <summary>
+    /// Callback invoked once yt-dlp has returned metadata for this URL (title +
+    /// uploader + duration) but before the actual download starts. Lets the UI
+    /// show the real title in the "now downloading" banner instead of whatever
+    /// the OG scrape produced. Parameters: (messageId, url, title, uploader).
+    /// </summary>
+    public Action<Guid, string, string?, string?>? OnMetadataResolved { get; set; }
+
+    /// <summary>
     /// URLs whose yt-dlp run is currently executing. With concurrency=1 this is at
     /// most one URL — used by the UI to surface "now downloading X" feedback.
     /// </summary>
     public IReadOnlyCollection<string> GetActiveDownloads() => _active.Keys.ToArray();
+
+    public int GetPendingTitleRefreshCount() => _pendingTitleRefresh.Count;
+
+    public IReadOnlyCollection<string> GetActiveTitleRefreshes() => _activeTitleRefresh.Keys.ToArray();
 
     public MediaCacheService(ILogger<MediaCacheService> logger, IWebHostEnvironment env, LinkPreviewSettingsService settings, LinkPreviewService linkPreviewService, PacingSettings pacing)
     {
@@ -205,7 +224,7 @@ public class MediaCacheService
             OnMediaDownloadStarting?.Invoke(messageId, url);
             try
             {
-                var (result, reason) = await DownloadMediaAsync(url);
+                var (result, reason) = await DownloadMediaAsync(messageId, url);
                 if (result != null)
                 {
                     _cache[url] = result;
@@ -242,7 +261,64 @@ public class MediaCacheService
         });
     }
 
-    private async Task<(MediaCacheEntry? Entry, string? Reason)> DownloadMediaAsync(string url)
+    /// <summary>
+    /// Metadata-only refresh: runs yt-dlp's --print probe (no download) and fires
+    /// OnMetadataResolved with the result. Shares the download semaphore + pacing
+    /// so we don't burst TikTok with both downloads and probes simultaneously.
+    /// Safe to call while real downloads are in flight — it just queues behind them.
+    /// Returns true if the URL was queued (i.e. not already pending/active).
+    /// </summary>
+    public bool QueueMetadataRefresh(Guid messageId, string url)
+    {
+        if (!IsAvailable) return false;
+        if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        // Dedup: don't queue if we're already going to probe this URL.
+        if (!_pendingTitleRefresh.TryAdd(url, 0))
+            return false;
+
+        _ = Task.Run(async () =>
+        {
+            await _downloadSemaphore.WaitAsync();
+            _activeTitleRefresh[url] = DateTime.UtcNow;
+            try
+            {
+                var (metadata, reason) = await GetMetadataAsync(url);
+                if (metadata != null)
+                {
+                    OnMetadataResolved?.Invoke(messageId, url, metadata.Title, metadata.Uploader);
+                    _logger.LogDebug("Title refresh: {Url} -> \"{Title}\"", url, metadata.Title);
+                }
+                else
+                {
+                    _logger.LogDebug("Title refresh failed for {Url}: {Reason}", url, reason);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Title refresh threw for {Url}", url);
+            }
+            finally
+            {
+                _activeTitleRefresh.TryRemove(url, out _);
+                try
+                {
+                    var min = _pacing.MinDelayMs;
+                    var max = Math.Max(min + 1, _pacing.MaxDelayMs + 1);
+                    var delay = min == 0 && max == 1 ? 0 : Random.Shared.Next(min, max);
+                    if (delay > 0) await Task.Delay(delay);
+                }
+                catch { }
+                _downloadSemaphore.Release();
+                _pendingTitleRefresh.TryRemove(url, out _);
+            }
+        });
+        return true;
+    }
+
+    private async Task<(MediaCacheEntry? Entry, string? Reason)> DownloadMediaAsync(Guid messageId, string url)
     {
         var sw = Stopwatch.StartNew();
         var hash = ComputeHash(url);
@@ -264,13 +340,17 @@ public class MediaCacheService
         if (IsSpotifyUrl(url))
             return await DownloadSpotifyAsync(url, hash, sw);
 
-        // Step 1: Get metadata — duration + whether video is available
+        // Step 1: Get metadata — duration + title + uploader.
         var (metadata, metaReason) = await GetMetadataAsync(url);
         if (metadata == null)
         {
             _logger.LogDebug("yt-dlp cannot handle {Url}: {Reason}", url, metaReason);
             return (null, metaReason ?? "yt-dlp could not read metadata");
         }
+
+        // Surface the real title/uploader before the slow download work runs, so the
+        // "now downloading" banner can show meaningful info immediately.
+        OnMetadataResolved?.Invoke(messageId, url, metadata.Title, metadata.Uploader);
 
         if (metadata.Duration > MaxDurationSeconds)
         {
@@ -368,7 +448,7 @@ public class MediaCacheService
             url, Path.GetFileName(actualPath), fileSize / 1024,
             (int)metadata.Duration, mediaType, sw.ElapsedMilliseconds, posterUrl != null);
 
-        return (new MediaCacheEntry(localUrl, mediaType, (int)metadata.Duration, posterUrl), null);
+        return (new MediaCacheEntry(localUrl, mediaType, (int)metadata.Duration, posterUrl, metadata.Title, metadata.Uploader), null);
     }
 
     /// <summary>
@@ -491,14 +571,17 @@ public class MediaCacheService
     }
 
     /// <summary>
-    /// Gets duration via yt-dlp metadata query. Returns (null, reason) when the URL
-    /// can't be probed; (meta, null) on success.
+    /// Gets duration + title + uploader via yt-dlp metadata query. Returns
+    /// (null, reason) when the URL can't be probed; (meta, null) on success.
+    /// Output format from yt-dlp: three lines printed in order.
     /// </summary>
     private async Task<(MediaMetadata? Meta, string? Reason)> GetMetadataAsync(string url)
     {
-        // RunYtDlpAsync returns stdout on success, stderr on failure.
+        // Three separate --print flags = one value per line, no escaping headaches
+        // with delimiters that might appear inside titles.
         var (exitCode, output) = await RunYtDlpAsync(
-            $"{CookiesArg()}--print duration --no-playlist -- \"{url}\"", MetadataTimeoutMs);
+            $"{CookiesArg()}--no-playlist --print \"%(title)s\" --print \"%(uploader)s\" --print \"%(duration)s\" -- \"{url}\"",
+            MetadataTimeoutMs);
 
         if (exitCode != 0)
             return (null, "yt-dlp metadata failed: " + SummariseYtDlpError(output));
@@ -506,13 +589,22 @@ public class MediaCacheService
         if (string.IsNullOrWhiteSpace(output))
             return (null, "yt-dlp returned no metadata");
 
-        var line = output.Trim().Split('\n')[0].Trim();
-        if (!double.TryParse(line, System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out var duration))
-            return (null, $"could not parse duration from yt-dlp output: \"{TruncateLog(line, 120)}\"");
+        var lines = output.Replace("\r", "").Trim().Split('\n');
+        if (lines.Length < 3)
+            return (null, $"unexpected yt-dlp metadata output (lines={lines.Length}): \"{TruncateLog(output, 120)}\"");
 
-        return (new MediaMetadata(duration), null);
+        var title = NullIfNa(lines[0].Trim());
+        var uploader = NullIfNa(lines[1].Trim());
+        if (!double.TryParse(lines[2].Trim(), System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var duration))
+            return (null, $"could not parse duration from yt-dlp output: \"{TruncateLog(lines[2], 120)}\"");
+
+        return (new MediaMetadata(duration, title, uploader), null);
     }
+
+    // yt-dlp prints "NA" when a field is unavailable. Treat that as null.
+    private static string? NullIfNa(string s) =>
+        string.IsNullOrWhiteSpace(s) || s == "NA" ? null : s;
 
     /// <summary>
     /// Strip the verbose log/warning prefixes yt-dlp emits and pick the most
@@ -658,7 +750,7 @@ public class MediaCacheService
         return text.Length <= maxLength ? text : text[..maxLength] + "...";
     }
 
-    private record MediaMetadata(double Duration);
+    private record MediaMetadata(double Duration, string? Title = null, string? Uploader = null);
 }
 
-public record MediaCacheEntry(string LocalUrl, CachedMediaType MediaType, int DurationSeconds, string? PosterUrl = null);
+public record MediaCacheEntry(string LocalUrl, CachedMediaType MediaType, int DurationSeconds, string? PosterUrl = null, string? Title = null, string? Uploader = null);

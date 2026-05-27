@@ -275,7 +275,8 @@
     <span class="pill"><span class="dot downloading"></span> <span id="ct-downloading">0</span> downloading</span>
     <span class="pill"><span class="dot queued"></span> <span id="ct-queued">0</span> queued</span>
     <span class="pill"><span class="dot failed"></span> <span id="ct-failed">0</span> failed</span>
-    <button id="retry-failed" class="secondary" style="margin-left:auto;padding:4px 10px;font-size:12px;" hidden>Retry failed</button>
+    <button id="refresh-titles" class="secondary" style="margin-left:auto;padding:4px 10px;font-size:12px;">Refresh titles</button>
+    <button id="retry-failed" class="secondary" style="padding:4px 10px;font-size:12px;" hidden>Retry failed</button>
   </div>
   <div id="toast" class="toast" hidden></div>
 </header>
@@ -373,6 +374,11 @@
     <span class="what"><span class="label">Now downloading:</span> <span id="active-what"></span></span>
     <span id="active-progress" class="label"></span>
   </div>
+  <div id="refresh-banner" class="active-banner" style="border-color: var(--muted);" hidden>
+    <span class="spinner" style="border-color: rgba(138,143,153,.25); border-top-color: var(--muted);"></span>
+    <span class="what"><span class="label">Refreshing title:</span> <span id="refresh-what"></span></span>
+    <span id="refresh-progress" class="label"></span>
+  </div>
   <div id="grid" class="grid"></div>
   <div id="empty" class="empty" hidden>No reposts yet. Use the bookmarklet (see panel above) to collect URLs from TikTok, then paste them in.</div>
 </main>
@@ -413,6 +419,27 @@ async function refreshStatus() {
     } else {
       banner.hidden = true;
     }
+
+    const refreshBanner = $('refresh-banner');
+    const tr = s.titleRefresh || { pending: 0, active: [] };
+    if (tr.pending > 0 || (tr.active && tr.active.length > 0)) {
+      const what = $('refresh-what');
+      what.innerHTML = '';
+      if (tr.active && tr.active.length > 0) {
+        const a = tr.active[0];
+        const link = document.createElement('a');
+        link.href = '/v/' + a.id;
+        link.textContent = a.title || a.url;
+        what.appendChild(link);
+      } else {
+        what.textContent = '(waiting for next slot)';
+      }
+      $('refresh-progress').textContent = `${tr.pending} remaining`;
+      refreshBanner.hidden = false;
+    } else {
+      refreshBanner.hidden = true;
+    }
+
     return s;
   } catch (e) {
     console.error(e);
@@ -530,7 +557,8 @@ async function poll() {
   try {
     const s = await refreshStatus();
     await refreshGrid();
-    if (s && (s.queued > 0 || s.downloading > 0)) {
+    const titleRefreshActive = s && s.titleRefresh && s.titleRefresh.pending > 0;
+    if (s && (s.queued > 0 || s.downloading > 0 || titleRefreshActive)) {
       pollTimer = setTimeout(poll, 2000);
     } else {
       pollTimer = null;
@@ -773,6 +801,24 @@ async function submitImport(urls) {
 
 $('import-submit').addEventListener('click', () => {
   submitImport(parseUrls($('import-input').value));
+});
+
+$('refresh-titles').addEventListener('click', async () => {
+  const btn = $('refresh-titles');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'queueing…';
+  try {
+    const r = await fetch('/reposts/refresh-titles', { method: 'POST' });
+    const d = await r.json();
+    btn.textContent = d.queued > 0 ? `queued ${d.queued}` : 'nothing to refresh';
+    await refreshStatus();
+    ensurePolling();
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2000);
+  } catch (e) {
+    btn.textContent = 'error';
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2000);
+  }
 });
 
 $('retry-failed').addEventListener('click', async () => {

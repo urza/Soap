@@ -42,6 +42,10 @@ public class PreviewCoordinator
             preview.MediaType = entry.MediaType;
             preview.MediaDurationSeconds = entry.DurationSeconds;
             preview.PosterUrl = entry.PosterUrl;
+            // yt-dlp's title is more reliable than the OG scrape (TikTok 's unauth'd
+            // OG returns generic homepage HTML for every video), so prefer it.
+            if (!string.IsNullOrEmpty(entry.Title))
+                preview.Title = entry.Title;
             OnMediaCacheReady?.Invoke(msgId, url, preview);
         };
     }
