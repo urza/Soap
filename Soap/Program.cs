@@ -126,6 +126,14 @@ app.MapPost("/scrape", async (ScrapeRequest req, TikTokScraperService scraper, C
 
 app.MapGet("/reposts", (RepostStore store) => Results.Ok(store.GetAll()));
 
+app.MapGet("/v/{id}", (string id, HttpContext ctx, RepostStore store) =>
+{
+    var entry = store.GetById(id);
+    if (entry == null) return Results.NotFound();
+    var html = VideoPageBuilder.Build(entry, ctx.Request);
+    return Results.Content(html, "text/html; charset=utf-8");
+});
+
 app.MapPost("/reposts/bulk", (BulkImportRequest req, RepostStore store, PreviewCoordinator coord) =>
 {
     if (req.Urls == null || req.Urls.Count == 0)

@@ -480,11 +480,7 @@ public class MediaCacheService
         return ext is ".mp4" or ".webm" or ".mkv";
     }
 
-    private static string ComputeHash(string url)
-    {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(url));
-        return Convert.ToHexString(bytes)[..16].ToLowerInvariant();
-    }
+    private static string ComputeHash(string url) => UrlHash.Compute(url);
 
     private async Task<(int ExitCode, string Output)> RunYtDlpAsync(string args, int timeoutMs)
     {

@@ -14,6 +14,7 @@ public class RepostStore
     private readonly IWebHostEnvironment _env;
     private readonly ILogger<RepostStore> _logger;
     private readonly ConcurrentDictionary<string, RepostEntry> _entries = new();
+    private readonly ConcurrentDictionary<string, RepostEntry> _byId = new();
     private readonly SemaphoreSlim _saveLock = new(1, 1);
     private CancellationTokenSource? _saveDebounceCts;
 
@@ -43,7 +44,10 @@ public class RepostStore
             foreach (var entry in list)
             {
                 if (!string.IsNullOrEmpty(entry.Url))
+                {
                     _entries[entry.Url] = entry;
+                    _byId[entry.Id] = entry;
+                }
             }
             _logger.LogInformation("Loaded {Count} repost entries from {Path}", _entries.Count, FilePath);
         }
@@ -54,6 +58,8 @@ public class RepostStore
     }
 
     public RepostEntry? Get(string url) => _entries.TryGetValue(url, out var e) ? e : null;
+
+    public RepostEntry? GetById(string id) => _byId.TryGetValue(id, out var e) ? e : null;
 
     public IReadOnlyList<RepostEntry> GetAll() =>
         _entries.Values.OrderByDescending(e => e.AddedAt).ToList();
@@ -79,14 +85,19 @@ public class RepostStore
     /// </summary>
     public bool TryAdd(string url, string? sourceProfile)
     {
-        var added = _entries.TryAdd(url, new RepostEntry
+        var entry = new RepostEntry
         {
             Url = url,
             SourceProfile = sourceProfile,
             Status = RepostStatus.Queued,
             AddedAt = DateTime.UtcNow
-        });
-        if (added) ScheduleSave();
+        };
+        var added = _entries.TryAdd(url, entry);
+        if (added)
+        {
+            _byId[entry.Id] = entry;
+            ScheduleSave();
+        }
         return added;
     }
 
