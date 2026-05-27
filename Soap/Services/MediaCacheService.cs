@@ -38,6 +38,11 @@ public class MediaCacheService
     // time and add a small random delay between them (see InterDownloadDelay* below).
     private readonly SemaphoreSlim _downloadSemaphore = new(1);
 
+    // When true, QueueDownload becomes a no-op and any already-queued tasks
+    // drain quickly (release the semaphore without doing yt-dlp work). Title
+    // refreshes (QueueMetadataRefresh) intentionally ignore this flag.
+    private volatile bool _downloadsPaused;
+
     /// <summary>Whether yt-dlp is available on this system.</summary>
     public static bool IsAvailable { get; private set; }
 
@@ -82,6 +87,15 @@ public class MediaCacheService
     /// most one URL — used by the UI to surface "now downloading X" feedback.
     /// </summary>
     public IReadOnlyCollection<string> GetActiveDownloads() => _active.Keys.ToArray();
+
+    public bool DownloadsPaused => _downloadsPaused;
+
+    public void SetDownloadsPaused(bool paused)
+    {
+        if (_downloadsPaused == paused) return;
+        _downloadsPaused = paused;
+        _logger.LogInformation("Downloads {State}", paused ? "PAUSED" : "RESUMED");
+    }
 
     public int GetPendingTitleRefreshCount() => _pendingTitleRefresh.Count;
 
@@ -196,6 +210,7 @@ public class MediaCacheService
     public void QueueDownload(Guid messageId, string url)
     {
         if (!IsAvailable) return;
+        if (_downloadsPaused) return; // don't even spawn a task while paused
 
         // Only http/https
         if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
@@ -220,6 +235,15 @@ public class MediaCacheService
         _ = Task.Run(async () =>
         {
             await _downloadSemaphore.WaitAsync();
+            // Pause could have been set while we were waiting — bail out fast (no
+            // pacing delay, no event fire) so the queue drains and the user can
+            // shift to title-refresh work without sitting through a long cooldown.
+            if (_downloadsPaused)
+            {
+                _downloadSemaphore.Release();
+                _inFlight.TryRemove(url, out _);
+                return;
+            }
             _active[url] = DateTime.UtcNow;
             OnMediaDownloadStarting?.Invoke(messageId, url);
             try
@@ -573,14 +597,16 @@ public class MediaCacheService
     /// <summary>
     /// Gets duration + title + uploader via yt-dlp metadata query. Returns
     /// (null, reason) when the URL can't be probed; (meta, null) on success.
-    /// Output format from yt-dlp: three lines printed in order.
+    /// Uses yt-dlp's JSON output format (%(.{...})j) so newlines/quotes in the
+    /// title field don't corrupt parsing — TikTok captions routinely contain them.
     /// </summary>
     private async Task<(MediaMetadata? Meta, string? Reason)> GetMetadataAsync(string url)
     {
-        // Three separate --print flags = one value per line, no escaping headaches
-        // with delimiters that might appear inside titles.
+        // %(.{a,b,c})j prints a single-line JSON object with just those fields.
+        // The double-braces escape C# string interpolation; the outer single braces
+        // in the actual command stay literal for yt-dlp.
         var (exitCode, output) = await RunYtDlpAsync(
-            $"{CookiesArg()}--no-playlist --print \"%(title)s\" --print \"%(uploader)s\" --print \"%(duration)s\" -- \"{url}\"",
+            $"{CookiesArg()}--no-playlist --print \"%(.{{title,uploader,duration}})j\" -- \"{url}\"",
             MetadataTimeoutMs);
 
         if (exitCode != 0)
@@ -589,20 +615,52 @@ public class MediaCacheService
         if (string.IsNullOrWhiteSpace(output))
             return (null, "yt-dlp returned no metadata");
 
-        var lines = output.Replace("\r", "").Trim().Split('\n');
-        if (lines.Length < 3)
-            return (null, $"unexpected yt-dlp metadata output (lines={lines.Length}): \"{TruncateLog(output, 120)}\"");
+        // yt-dlp may emit multiple lines if there are warnings to stdout, but the
+        // JSON-print output is a single line. Pick the first { … } line.
+        string? jsonLine = null;
+        foreach (var raw in output.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.StartsWith("{") && line.EndsWith("}"))
+            {
+                jsonLine = line;
+                break;
+            }
+        }
+        if (jsonLine == null)
+            return (null, $"unexpected yt-dlp metadata output: \"{TruncateLog(output, 200)}\"");
 
-        var title = NullIfNa(lines[0].Trim());
-        var uploader = NullIfNa(lines[1].Trim());
-        if (!double.TryParse(lines[2].Trim(), System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out var duration))
-            return (null, $"could not parse duration from yt-dlp output: \"{TruncateLog(lines[2], 120)}\"");
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(jsonLine);
+            var root = doc.RootElement;
 
-        return (new MediaMetadata(duration, title, uploader), null);
+            string? title = null, uploader = null;
+            if (root.TryGetProperty("title", out var t) && t.ValueKind == System.Text.Json.JsonValueKind.String)
+                title = NullIfNa(t.GetString() ?? "");
+            if (root.TryGetProperty("uploader", out var u) && u.ValueKind == System.Text.Json.JsonValueKind.String)
+                uploader = NullIfNa(u.GetString() ?? "");
+
+            double duration = 0;
+            if (root.TryGetProperty("duration", out var d))
+            {
+                if (d.ValueKind == System.Text.Json.JsonValueKind.Number)
+                    duration = d.GetDouble();
+                else if (d.ValueKind == System.Text.Json.JsonValueKind.String
+                         && double.TryParse(d.GetString(), System.Globalization.NumberStyles.Float,
+                             System.Globalization.CultureInfo.InvariantCulture, out var parsed))
+                    duration = parsed;
+            }
+
+            return (new MediaMetadata(duration, title, uploader), null);
+        }
+        catch (System.Text.Json.JsonException ex)
+        {
+            return (null, $"yt-dlp metadata JSON parse failed ({ex.Message}): \"{TruncateLog(jsonLine, 200)}\"");
+        }
     }
 
-    // yt-dlp prints "NA" when a field is unavailable. Treat that as null.
+    // yt-dlp prints "NA" (and sometimes empty) when a field is unavailable.
     private static string? NullIfNa(string s) =>
         string.IsNullOrWhiteSpace(s) || s == "NA" ? null : s;
 

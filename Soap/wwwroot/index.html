@@ -275,7 +275,8 @@
     <span class="pill"><span class="dot downloading"></span> <span id="ct-downloading">0</span> downloading</span>
     <span class="pill"><span class="dot queued"></span> <span id="ct-queued">0</span> queued</span>
     <span class="pill"><span class="dot failed"></span> <span id="ct-failed">0</span> failed</span>
-    <button id="refresh-titles" class="secondary" style="margin-left:auto;padding:4px 10px;font-size:12px;">Refresh titles</button>
+    <button id="pause-toggle" class="secondary" style="margin-left:auto;padding:4px 10px;font-size:12px;">Pause</button>
+    <button id="refresh-titles" class="secondary" style="padding:4px 10px;font-size:12px;">Refresh titles</button>
     <button id="retry-failed" class="secondary" style="padding:4px 10px;font-size:12px;" hidden>Retry failed</button>
   </div>
   <div id="toast" class="toast" hidden></div>
@@ -401,6 +402,18 @@ async function refreshStatus() {
     $('ct-queued').textContent = s.queued;
     $('ct-failed').textContent = s.failed;
     $('retry-failed').hidden = s.failed === 0;
+
+    // Pause/Resume label tracks the server-side flag (in case multiple tabs/clients).
+    const pauseBtn = $('pause-toggle');
+    if (s.paused) {
+      pauseBtn.textContent = 'Resume';
+      pauseBtn.style.borderColor = 'var(--warn)';
+      pauseBtn.style.color = 'var(--warn)';
+    } else {
+      pauseBtn.textContent = 'Pause';
+      pauseBtn.style.borderColor = '';
+      pauseBtn.style.color = '';
+    }
 
     const banner = $('active-banner');
     if (s.active && s.active.length > 0) {
@@ -809,7 +822,9 @@ $('refresh-titles').addEventListener('click', async () => {
   btn.disabled = true;
   btn.textContent = 'queueing…';
   try {
-    const r = await fetch('/reposts/refresh-titles', { method: 'POST' });
+    // ?all=true refreshes every entry, not just missing/bogus ones — useful
+    // when you want to re-fetch everything (e.g. after fixing cookies).
+    const r = await fetch('/reposts/refresh-titles?all=true', { method: 'POST' });
     const d = await r.json();
     btn.textContent = d.queued > 0 ? `queued ${d.queued}` : 'nothing to refresh';
     await refreshStatus();
@@ -818,6 +833,32 @@ $('refresh-titles').addEventListener('click', async () => {
   } catch (e) {
     btn.textContent = 'error';
     setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2000);
+  }
+});
+
+$('pause-toggle').addEventListener('click', async () => {
+  const btn = $('pause-toggle');
+  const wasPaused = btn.textContent === 'Resume';
+  const next = !wasPaused;
+  btn.disabled = true;
+  try {
+    const r = await fetch('/downloads/pause', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ paused: next })
+    });
+    const d = await r.json();
+    showToast(
+      d.paused
+        ? 'Downloads paused. Title refreshes still work — useful for changing pacing first.'
+        : (d.requeued > 0 ? `Resumed — re-queued ${d.requeued} pending downloads.` : 'Resumed.'),
+      false);
+    await refreshStatus();
+    ensurePolling();
+  } catch (e) {
+    showToast('Pause toggle failed: ' + e.message, true);
+  } finally {
+    btn.disabled = false;
   }
 });
 

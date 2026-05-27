@@ -271,7 +271,7 @@ app.MapGet("/reposts/status", (RepostStore store, MediaCacheService svc) =>
             .Select(e => new { id = e!.Id, url = e.Url, title = e.Title })
             .ToList()
     };
-    return Results.Ok(new { queued = q, downloading = d, ready = r, failed = f, total = q + d + r + f, active, titleRefresh });
+    return Results.Ok(new { queued = q, downloading = d, ready = r, failed = f, total = q + d + r + f, active, titleRefresh, paused = svc.DownloadsPaused });
 });
 
 app.MapGet("/pacing", (PacingSettings p) =>
@@ -290,20 +290,45 @@ var bogusTitles = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     "TikTok - Make Your Day",
 };
 
-app.MapPost("/reposts/refresh-titles", (RepostStore store, MediaCacheService mediaSvc) =>
+app.MapPost("/reposts/refresh-titles", (bool? all, RepostStore store, MediaCacheService mediaSvc) =>
 {
-    var candidates = store.GetAll()
-        .Where(e => !string.IsNullOrEmpty(e.Url))
-        .Where(e => string.IsNullOrWhiteSpace(e.Title) || bogusTitles.Contains(e.Title!))
-        .ToList();
+    IEnumerable<RepostEntry> entries = store.GetAll().Where(e => !string.IsNullOrEmpty(e.Url));
+    if (all != true)
+        entries = entries.Where(e => string.IsNullOrWhiteSpace(e.Title) || bogusTitles.Contains(e.Title!));
 
+    var candidates = entries.ToList();
     int queued = 0;
     foreach (var e in candidates)
     {
         if (mediaSvc.QueueMetadataRefresh(Guid.NewGuid(), e.Url))
             queued++;
     }
-    return Results.Ok(new { queued, candidates = candidates.Count });
+    return Results.Ok(new { queued, candidates = candidates.Count, mode = all == true ? "all" : "missing-only" });
+});
+
+// --- Pause / resume downloads ---
+
+app.MapGet("/downloads/pause", (MediaCacheService svc) =>
+    Results.Ok(new { paused = svc.DownloadsPaused }));
+
+app.MapPost("/downloads/pause", (PauseRequest req, MediaCacheService svc, RepostStore store, PreviewCoordinator coord) =>
+{
+    var wasPaused = svc.DownloadsPaused;
+    svc.SetDownloadsPaused(req.Paused);
+
+    int requeued = 0;
+    if (wasPaused && !req.Paused)
+    {
+        // Resuming: paused tasks already drained without doing work, so the entries
+        // that were Queued aren't in any in-flight set anymore. Re-feed them so
+        // they actually start downloading again.
+        foreach (var e in store.GetAll().Where(x => x.Status == RepostStatus.Queued))
+        {
+            coord.Queue(e.Url, includeMedia: true);
+            requeued++;
+        }
+    }
+    return Results.Ok(new { paused = svc.DownloadsPaused, requeued });
 });
 
 app.MapPost("/reposts/retry-failed", (RepostStore store, MediaCacheService mediaSvc, PreviewCoordinator coord) =>
@@ -415,3 +440,4 @@ internal record ScrapeRequest(string Username);
 internal record CookieRequest(string CookieHeader);
 internal record BulkImportRequest(List<string> Urls, string? SourceProfile);
 internal record PacingRequest(int MinMs, int MaxMs);
+internal record PauseRequest(bool Paused);
