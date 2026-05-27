@@ -59,7 +59,20 @@
     color: var(--muted);
     font-size: 13px;
   }
-  .status .pill { display: inline-flex; align-items: center; gap: 6px; }
+  .status .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    cursor: pointer;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    user-select: none;
+  }
+  .status .pill:hover { background: rgba(255,255,255,.04); }
+  .status .pill.active {
+    border-color: var(--accent);
+    color: var(--text);
+    background: rgba(255,59,111,.08);
+  }
   .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
   .dot.queued { background: var(--muted); }
   .dot.downloading { background: var(--warn); animation: pulse 1.4s infinite; }
@@ -270,11 +283,15 @@
     <input id="single-url" type="text" placeholder="Add one TikTok video URL (good for testing)" autocomplete="off" spellcheck="false">
     <button id="single-add">Add</button>
   </div>
+  <div class="controls" style="margin-top:6px;">
+    <input id="search" type="search" placeholder="Search title, uploader, URL…  (Esc to clear)" autocomplete="off" spellcheck="false">
+    <span id="search-stats" class="cookie-status" style="white-space:nowrap;">…</span>
+  </div>
   <div class="status" id="status">
-    <span class="pill"><span class="dot ready"></span> <span id="ct-ready">0</span> backed up</span>
-    <span class="pill"><span class="dot downloading"></span> <span id="ct-downloading">0</span> downloading</span>
-    <span class="pill"><span class="dot queued"></span> <span id="ct-queued">0</span> queued</span>
-    <span class="pill"><span class="dot failed"></span> <span id="ct-failed">0</span> failed</span>
+    <span class="pill" data-status="Ready" title="Click to filter"><span class="dot ready"></span> <span id="ct-ready">0</span> backed up</span>
+    <span class="pill" data-status="Downloading" title="Click to filter"><span class="dot downloading"></span> <span id="ct-downloading">0</span> downloading</span>
+    <span class="pill" data-status="Queued" title="Click to filter"><span class="dot queued"></span> <span id="ct-queued">0</span> queued</span>
+    <span class="pill" data-status="Failed" title="Click to filter"><span class="dot failed"></span> <span id="ct-failed">0</span> failed</span>
     <button id="pause-toggle" class="secondary" style="margin-left:auto;padding:4px 10px;font-size:12px;">Pause</button>
     <button id="refresh-titles" class="secondary" style="padding:4px 10px;font-size:12px;">Refresh titles</button>
     <button id="retry-failed" class="secondary" style="padding:4px 10px;font-size:12px;" hidden>Retry failed</button>
@@ -460,17 +477,50 @@ async function refreshStatus() {
   }
 }
 
+// --- Search / filter state ---
+let searchQuery = '';
+let statusFilter = null; // null | 'Ready' | 'Downloading' | 'Queued' | 'Failed'
+
+function matchesFilter(item) {
+  if (statusFilter && item.status !== statusFilter) return false;
+  if (searchQuery) {
+    const q = searchQuery.toLowerCase();
+    const haystack = [
+      item.title || '',
+      item.sourceProfile || '',
+      item.url || '',
+      item.description || ''
+    ].join(' ').toLowerCase();
+    if (!haystack.includes(q)) return false;
+  }
+  return true;
+}
+
 async function refreshGrid() {
   const grid = $('grid');
   const items = await jget('/reposts');
-  $('empty').hidden = items.length > 0;
+  const filtered = items.filter(matchesFilter);
 
-  // Build a map of existing cards by URL to update in place
-  const existing = new Map();
-  for (const el of grid.querySelectorAll('[data-url]')) existing.set(el.dataset.url, el);
+  const stats = $('search-stats');
+  if (searchQuery || statusFilter) {
+    stats.textContent = `${filtered.length} of ${items.length}`;
+  } else {
+    stats.textContent = items.length === 1 ? '1 video' : `${items.length} videos`;
+  }
+
+  const empty = $('empty');
+  if (items.length === 0) {
+    empty.hidden = false;
+    empty.textContent = 'No reposts yet. Use the bookmarklet (see panel above) to collect URLs from TikTok, then paste them in.';
+  } else if (filtered.length === 0) {
+    empty.hidden = false;
+    empty.textContent = `No matches for the current filter.`;
+  } else {
+    empty.hidden = true;
+  }
 
   grid.innerHTML = '';
-  for (const item of items) {
+  for (const item of filtered) {
     grid.appendChild(renderCard(item));
   }
 }
@@ -933,6 +983,34 @@ document.querySelectorAll('.pacing-preset').forEach(btn => {
     $('pacing-min').value = min;
     $('pacing-max').value = max;
     savePacing(min, max);
+  });
+});
+
+// --- Search + status filter wiring ---
+$('search').addEventListener('input', () => {
+  searchQuery = $('search').value.trim();
+  refreshGrid();
+});
+$('search').addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    $('search').value = '';
+    searchQuery = '';
+    refreshGrid();
+  }
+});
+
+function syncPillActive() {
+  document.querySelectorAll('.status .pill').forEach(p => {
+    p.classList.toggle('active', p.dataset.status === statusFilter);
+  });
+}
+
+document.querySelectorAll('.status .pill').forEach(p => {
+  p.addEventListener('click', () => {
+    const s = p.dataset.status;
+    statusFilter = statusFilter === s ? null : s;
+    syncPillActive();
+    refreshGrid();
   });
 });
 
