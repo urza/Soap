@@ -603,10 +603,13 @@ public class MediaCacheService
     private async Task<(MediaMetadata? Meta, string? Reason)> GetMetadataAsync(string url)
     {
         // %(.{a,b,c})j prints a single-line JSON object with just those fields.
-        // The double-braces escape C# string interpolation; the outer single braces
-        // in the actual command stay literal for yt-dlp.
+        // We also pull `description` because yt-dlp falls back to a placeholder
+        // title ("TikTok video #<id>") when the title slot is empty, but the
+        // real caption is often still in description. The double-braces escape
+        // C# string interpolation; the outer single braces in the actual command
+        // stay literal for yt-dlp.
         var (exitCode, output) = await RunYtDlpAsync(
-            $"{CookiesArg()}--no-playlist --print \"%(.{{title,uploader,duration}})j\" -- \"{url}\"",
+            $"{CookiesArg()}--no-playlist --print \"%(.{{title,description,uploader,duration}})j\" -- \"{url}\"",
             MetadataTimeoutMs);
 
         if (exitCode != 0)
@@ -635,11 +638,23 @@ public class MediaCacheService
             using var doc = System.Text.Json.JsonDocument.Parse(jsonLine);
             var root = doc.RootElement;
 
-            string? title = null, uploader = null;
+            string? title = null, description = null, uploader = null;
             if (root.TryGetProperty("title", out var t) && t.ValueKind == System.Text.Json.JsonValueKind.String)
                 title = NullIfNa(t.GetString() ?? "");
+            if (root.TryGetProperty("description", out var ds) && ds.ValueKind == System.Text.Json.JsonValueKind.String)
+                description = NullIfNa(ds.GetString() ?? "");
             if (root.TryGetProperty("uploader", out var u) && u.ValueKind == System.Text.Json.JsonValueKind.String)
                 uploader = NullIfNa(u.GetString() ?? "");
+
+            // yt-dlp's TikTok extractor synthesizes "TikTok video #<id>" when no
+            // caption is present. If a real description is available, prefer it
+            // over the placeholder so the gallery shows something meaningful.
+            if (LooksLikeTikTokPlaceholderTitle(title) && !string.IsNullOrWhiteSpace(description))
+                title = description;
+
+            // Captions can be long (multi-paragraph) — trim for display.
+            if (title != null && title.Length > 200)
+                title = title.Substring(0, 200).TrimEnd() + "…";
 
             double duration = 0;
             if (root.TryGetProperty("duration", out var d))
@@ -663,6 +678,15 @@ public class MediaCacheService
     // yt-dlp prints "NA" (and sometimes empty) when a field is unavailable.
     private static string? NullIfNa(string s) =>
         string.IsNullOrWhiteSpace(s) || s == "NA" ? null : s;
+
+    // yt-dlp's TikTok extractor uses "TikTok video #<numeric id>" as a fallback
+    // title when no caption is set on the video. Detect it so we can substitute
+    // the description (if any) before saving.
+    private static readonly System.Text.RegularExpressions.Regex PlaceholderTitleRegex =
+        new(@"^TikTok video #\d+$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static bool LooksLikeTikTokPlaceholderTitle(string? t) =>
+        !string.IsNullOrEmpty(t) && PlaceholderTitleRegex.IsMatch(t);
 
     /// <summary>
     /// Strip the verbose log/warning prefixes yt-dlp emits and pick the most

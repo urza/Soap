@@ -283,18 +283,23 @@ app.MapPost("/pacing", async (PacingRequest req, PacingSettings p) =>
     return Results.Ok(new { minMs = p.MinDelayMs, maxMs = p.MaxDelayMs });
 });
 
-// Known-bogus titles the OG scrape produces when TikTok serves its generic
-// homepage HTML to unauthenticated requests. Treated as missing for refresh.
-var bogusTitles = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-{
-    "TikTok - Make Your Day",
-};
+// Patterns that indicate a "title we'd rather not keep":
+//  - "TikTok - Make Your Day" — the OG scrape's fallback when TikTok served its
+//    generic homepage HTML to our unauthenticated link-preview request.
+//  - "TikTok video #<digits>" — yt-dlp's fallback when the video has no caption.
+//    We'll re-probe these too in case the description is now available.
+var bogusTitleRegex = new System.Text.RegularExpressions.Regex(
+    @"^(TikTok - Make Your Day|TikTok video #\d+)$",
+    System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+bool NeedsTitleRefresh(RepostEntry e) =>
+    string.IsNullOrWhiteSpace(e.Title) || bogusTitleRegex.IsMatch(e.Title!);
 
 app.MapPost("/reposts/refresh-titles", (bool? all, RepostStore store, MediaCacheService mediaSvc) =>
 {
     IEnumerable<RepostEntry> entries = store.GetAll().Where(e => !string.IsNullOrEmpty(e.Url));
     if (all != true)
-        entries = entries.Where(e => string.IsNullOrWhiteSpace(e.Title) || bogusTitles.Contains(e.Title!));
+        entries = entries.Where(NeedsTitleRefresh);
 
     var candidates = entries.ToList();
     int queued = 0;
