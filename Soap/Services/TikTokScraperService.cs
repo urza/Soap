@@ -66,19 +66,11 @@ public class TikTokScraperService
                 warning = "Found 0 URLs (yt-dlp exited cleanly). Cookies may be stale, or this yt-dlp version may not support the /reposts feed.";
         }
 
-        int newCount = 0, knownCount = 0;
-        foreach (var url in enumResult.Urls)
-        {
-            if (_store.TryAdd(url, username))
-            {
-                newCount++;
-                _coordinator.Queue(url, includeMedia: true);
-            }
-            else
-            {
-                knownCount++;
-            }
-        }
+        var added = _store.ImportNewestFirst(enumResult.Urls, username);
+        foreach (var url in added)
+            _coordinator.Queue(url, includeMedia: true);
+        var newCount = added.Count;
+        var knownCount = enumResult.Urls.Count - newCount;
 
         _logger.LogInformation("Scraped {Profile}: found={Found} new={New} known={Known} exit={Exit}",
             profileUrl, enumResult.Urls.Count, newCount, knownCount, enumResult.ExitCode);

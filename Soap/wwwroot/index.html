@@ -5,335 +5,177 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Soap — TikTok Repost Backup</title>
 <style>
-  :root {
-    color-scheme: dark;
-    --bg: #0c0d10;
-    --panel: #15171c;
-    --border: #262931;
-    --text: #e6e8ec;
-    --muted: #8a8f99;
-    --accent: #ff3b6f;
-    --ok: #2ecc71;
-    --warn: #f5a623;
-    --err: #e74c3c;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-  }
-  header {
-    position: sticky; top: 0; z-index: 10;
-    background: rgba(12,13,16,.92);
-    backdrop-filter: blur(8px);
-    border-bottom: 1px solid var(--border);
-    padding: 14px 20px;
-  }
-  h1 { margin: 0 0 10px; font-size: 18px; font-weight: 600; }
-  .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  input[type="text"] {
-    flex: 1; min-width: 220px;
-    padding: 8px 12px;
-    background: var(--panel);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    font: inherit;
-  }
-  input:focus { outline: 1px solid var(--accent); }
-  button {
-    padding: 8px 16px;
-    background: var(--accent);
-    color: white;
-    border: 0;
-    border-radius: 8px;
-    font: inherit; font-weight: 600;
-    cursor: pointer;
-  }
-  button:disabled { opacity: .5; cursor: wait; }
-  .status {
-    margin-top: 10px;
-    display: flex; gap: 14px;
-    color: var(--muted);
-    font-size: 13px;
-  }
-  .status .pill {
-    display: inline-flex; align-items: center; gap: 6px;
-    cursor: pointer;
-    padding: 2px 8px;
-    border-radius: 999px;
-    border: 1px solid transparent;
-    user-select: none;
-  }
-  .status .pill:hover { background: rgba(255,255,255,.04); }
-  .status .pill.active {
-    border-color: var(--accent);
-    color: var(--text);
-    background: rgba(255,59,111,.08);
-  }
-  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-  .dot.queued { background: var(--muted); }
-  .dot.downloading { background: var(--warn); animation: pulse 1.4s infinite; }
-  .dot.ready { background: var(--ok); }
-  .dot.failed { background: var(--err); }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
-  .toast {
-    margin-top: 10px;
-    padding: 8px 12px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    color: var(--muted);
-    font-size: 13px;
-    white-space: pre-wrap;
-    font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
-    max-height: 240px;
-    overflow: auto;
-  }
-  .toast.warn { border-color: var(--warn); color: var(--text); }
-  .panels {
-    padding: 10px 20px 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  details.cookie-panel {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 8px 12px;
-  }
-  details.cookie-panel[data-state="missing"] { border-color: var(--warn); }
-  details.cookie-panel > summary {
-    cursor: pointer;
-    font-size: 13px;
-    list-style: none;
-    display: flex; align-items: center; gap: 8px;
-  }
-  details.cookie-panel > summary::-webkit-details-marker { display: none; }
-  details.cookie-panel > summary::before {
-    content: "▸";
-    transition: transform .15s;
-    color: var(--muted);
-  }
-  details.cookie-panel[open] > summary::before { transform: rotate(90deg); }
-  .cookie-status { color: var(--muted); margin-left: auto; font-size: 12px; }
-  .cookie-status.ok { color: var(--ok); }
-  .cookie-status.warn { color: var(--warn); }
-  .cookie-body { padding-top: 10px; }
-  .cookie-body ol { margin: 0 0 10px; padding-left: 20px; color: var(--muted); }
-  .cookie-body ol li { margin-bottom: 4px; }
-  .cookie-body code {
-    background: #000;
-    padding: 1px 5px;
-    border-radius: 4px;
-    font-size: 12px;
-    color: var(--text);
-  }
-  .cookie-body textarea {
-    width: 100%;
-    min-height: 80px;
-    background: #000;
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 8px;
-    font: 12px ui-monospace, "Cascadia Code", Menlo, monospace;
-    resize: vertical;
-  }
-  .cookie-actions { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
-  button.secondary {
-    background: transparent;
-    color: var(--muted);
-    border: 1px solid var(--border);
-  }
-  a.bookmarklet {
-    display: inline-block;
-    padding: 6px 14px;
-    background: var(--accent);
-    color: white;
-    border-radius: 8px;
-    text-decoration: none;
-    font-weight: 600;
-    cursor: grab;
-    user-select: none;
-  }
-  a.bookmarklet:hover { filter: brightness(1.1); }
-  a.bookmarklet:active { cursor: grabbing; }
-  main { padding: 20px; }
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: 14px;
-  }
-  .card {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: hidden;
-    display: flex; flex-direction: column;
-  }
-  .media {
-    position: relative;
-    aspect-ratio: 9 / 16;
-    background: #000;
-    overflow: hidden;
-  }
-  .media a { display: block; width: 100%; height: 100%; position: relative; }
-  .media img {
-    width: 100%; height: 100%; object-fit: cover; display: block;
-    transition: transform .25s ease;
-  }
-  .media a:hover img { transform: scale(1.04); }
-  .placeholder {
-    width: 100%; height: 100%;
-    display: flex; align-items: center; justify-content: center;
-    color: var(--muted);
-    font-size: 13px;
-    text-align: center;
-    padding: 12px;
-  }
-  .play-overlay {
-    position: absolute;
-    inset: 0;
-    display: flex; align-items: center; justify-content: center;
-    pointer-events: none;
-    opacity: .85;
-    transition: opacity .15s ease;
-  }
-  .media a:hover .play-overlay { opacity: 1; }
-  .play-overlay svg {
-    width: 56px; height: 56px;
-    filter: drop-shadow(0 2px 8px rgba(0,0,0,.6));
-  }
-  .badge {
-    position: absolute; top: 8px; left: 8px;
-    background: rgba(0,0,0,.6);
-    padding: 4px 8px;
-    border-radius: 6px;
-    font-size: 11px;
-    color: white;
-    display: inline-flex; align-items: center; gap: 5px;
-  }
-  .body { padding: 10px 12px; }
-  .title {
-    font-size: 13px; font-weight: 500;
-    line-height: 1.35;
-    margin: 0 0 4px;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-  .meta { color: var(--muted); font-size: 11px; display: flex; gap: 8px; }
-  .meta a { color: var(--muted); text-decoration: none; }
-  .meta a:hover { color: var(--text); }
-  .empty {
-    text-align: center; padding: 60px 20px; color: var(--muted);
-  }
-  .active-banner {
-    margin: 0 0 14px;
-    padding: 10px 14px;
-    background: var(--panel);
-    border: 1px solid var(--warn);
-    border-radius: 8px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    font-size: 13px;
-  }
-  .active-banner .spinner {
-    width: 14px; height: 14px;
-    border-radius: 50%;
-    border: 2px solid rgba(245,166,35,.25);
-    border-top-color: var(--warn);
-    animation: spin .9s linear infinite;
-    flex-shrink: 0;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .active-banner .what {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .active-banner a { color: var(--text); text-decoration: none; }
-  .active-banner a:hover { text-decoration: underline; }
-  .active-banner .label { color: var(--muted); }
-  .error {
-    background: rgba(231,76,60,.12);
-    border: 1px solid rgba(231,76,60,.35);
-    border-radius: 6px;
-    padding: 6px 8px;
-    margin-top: 6px;
-    color: #ff8e7f;
-    font-size: 11px;
-    font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
-    white-space: pre-wrap;
-    word-break: break-word;
-    max-height: 120px;
-    overflow: auto;
-  }
+
+  :root { color-scheme: dark; --bg:#101215; --panel:#191c21; --border:#30353d; --text:#f0f1f4; --muted:#a3aab7; --accent:#ed4774; --ok:#73d9aa; --warn:#f3c16b; --err:#ff918a; }
+  * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  button,input,textarea,select { font:inherit; }
+  button,a,input,textarea,summary { -webkit-tap-highlight-color:transparent; }
+  :focus-visible { outline:2px solid var(--warn); outline-offset:4px; }
+  button { cursor:pointer; border:1px solid transparent; border-radius:9px; padding:10px 16px; background:var(--accent); color:white; font-weight:600; }
+  button:hover { filter:brightness(1.12); }
+  button:disabled { opacity:.55; cursor:wait; }
+  button.secondary { background:var(--panel); border-color:var(--border); color:var(--text); }
+  button.quiet { background:transparent; color:var(--muted); padding:6px 10px; }
+  a { color:var(--text); }
+  input,textarea { background:#101215; color:var(--text); border:1px solid var(--border); border-radius:8px; padding:11px 12px; min-width:0; }
+  textarea { width:100%; resize:vertical; min-height:120px; }
+  input::placeholder,textarea::placeholder { color:#8e97a6; }
+  .topbar { border-bottom:1px solid var(--border); }
+  .topbar-inner { max-width:1280px; margin:auto; padding:18px 32px; display:flex; align-items:center; justify-content:space-between; gap:16px; }
+  .brand { display:flex; align-items:center; gap:12px; text-decoration:none; font-weight:750; font-size:23px; letter-spacing:-.8px; }
+  .brand-mark { width:34px; height:34px; border-radius:11px; display:grid; place-items:center; color:var(--accent); background:#ed47741c; font-size:22px; }
+  .brand small { color:var(--muted); font-size:12px; letter-spacing:0; font-weight:400; padding-left:14px; border-left:1px solid var(--border); }
+  .actions,.controls,.cookie-actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+  main { max-width:1280px; padding:38px 32px 60px; margin:auto; }
+  .library-heading { display:flex; align-items:center; justify-content:space-between; gap:24px; margin-bottom:25px; }
+  h1 { font-size:30px; letter-spacing:-1px; line-height:1.2; margin:0 0 6px; }
+  h2 { margin:0; font-size:22px; letter-spacing:-.5px; }
+  h3 { font-size:15px; margin:0 0 10px; }
+  p { margin:0 0 14px; }
+  .muted,.intro { color:var(--muted); }
+  #search-stats { margin:0; color:var(--muted); }
+  .sort-note { margin:3px 0 0; font-size:12px; color:var(--muted); }
+  .search-box { width:min(360px,100%); }
+  .search-box input { width:100%; background:var(--panel); padding-left:15px; }
+  .field-label { display:block; font-size:12px; font-weight:600; margin-bottom:7px; color:var(--muted); }
+  .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+  .status { display:flex; gap:6px; flex-wrap:wrap; padding-bottom:22px; }
+  .status .pill { display:inline-flex; align-items:center; gap:8px; background:transparent; color:var(--muted); font-size:13px; padding:8px 12px; border:1px solid transparent; }
+  .status .pill.active { background:var(--panel); border-color:var(--border); color:var(--text); }
+  .count { padding:0 6px; background:#ffffff0a; border-radius:4px; font-size:12px; }
+  .dot { width:6px; height:6px; border-radius:50%; display:inline-block; flex-shrink:0; }
+  .dot.ready { background:var(--ok); } .dot.queued { background:var(--muted); } .dot.downloading { background:var(--warn); } .dot.failed { background:var(--err); }
+  .queue-panel { background:var(--panel); border:1px solid var(--border); border-radius:12px; margin-bottom:24px; padding:15px 18px; }
+  .queue-overview { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+  #queue-summary { font-weight:600; font-size:13px; }
+  #queue-note { margin:3px 0 0; color:var(--muted); font-size:12px; }
+  .queue-panel button { padding:7px 12px; font-size:12px; }
+  .active-banner { display:flex; gap:10px; align-items:center; margin-top:12px; padding-top:12px; border-top:1px solid var(--border); color:var(--muted); font-size:12px; }
+  .active-banner .what { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .active-banner a { text-decoration:none; }
+  .spinner { width:12px; height:12px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .9s linear infinite; flex-shrink:0; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(205px,1fr)); gap:22px 18px; }
+  .card { min-width:0; border:1px solid var(--border); border-radius:12px; background:var(--panel); overflow:hidden; }
+  .media { position:relative; aspect-ratio:3/4; background:#20242b; overflow:hidden; }
+  .media a { display:block; position:relative; width:100%; height:100%; }
+  .media img { display:block; width:100%; height:100%; object-fit:cover; transition:transform .2s; }
+  .media a:hover img { transform:scale(1.035); }
+  .badge { position:absolute; z-index:1; left:10px; top:10px; display:inline-flex; gap:6px; align-items:center; border-radius:6px; padding:4px 8px; background:#101215e6; font-size:10px; color:var(--text); pointer-events:none; }
+  .play-overlay { position:absolute; inset:0; display:grid; place-items:center; }
+  .play-overlay svg { width:44px; height:44px; }
+  .placeholder { height:100%; padding:32px 20px; display:flex; align-items:center; justify-content:center; text-align:center; font-size:12px; color:var(--muted); }
+  .body { padding:13px; }
+  .title { font-size:13px; font-weight:550; margin:0 0 7px; line-height:1.45; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; }
+  .meta { display:flex; justify-content:space-between; gap:8px; font-size:11px; color:var(--muted); }
+  .meta a { color:var(--muted); text-decoration:none; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .error { color:var(--err); font-size:11px; margin-top:12px; overflow-wrap:anywhere; }
+  .error summary { cursor:pointer; } .error p { margin:7px 0; max-height:120px; overflow:auto; }
+  .retry-one { width:100%; margin-top:12px; padding:7px; font-size:12px; }
+  .empty { text-align:center; padding:64px 24px; border:1px dashed var(--border); border-radius:14px; }
+  .empty-symbol { color:var(--accent); font-size:34px; margin-bottom:12px; }
+  .empty h2 { margin-bottom:10px; } .empty p { color:var(--muted); max-width:390px; margin:0 auto 22px; }
+  .toast { position:fixed; z-index:20; bottom:24px; left:50%; transform:translateX(-50%); width:max-content; max-width:min(560px,calc(100% - 32px)); border:1px solid var(--ok); background:#222830; color:var(--text); box-shadow:0 8px 30px #0005; border-radius:10px; padding:14px 18px; font-size:13px; }
+  .toast.warn { border-color:var(--warn); }
+  .connection-error { border:1px solid var(--warn); background:#f3c16b0a; color:var(--warn); border-radius:10px; padding:12px 16px; margin-bottom:20px; }
+  dialog { background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:16px; padding:26px; width:min(620px,calc(100% - 24px)); max-height:90dvh; box-shadow:0 24px 100px #0008; }
+  dialog::backdrop { background:#0009; backdrop-filter:blur(3px); }
+  .dialog-heading { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:10px; }
+  .dialog-heading button { font-size:20px; padding:2px 10px; }
+  .intro { font-size:13px; margin-bottom:24px; }
+  .import-section { border-top:1px solid var(--border); margin-top:22px; padding-top:22px; }
+  .controls input { flex:1; }
+  .cookie-panel { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:14px; margin-top:14px; }
+  .cookie-panel > summary { cursor:pointer; display:flex; align-items:center; gap:10px; font-size:13px; font-weight:550; }
+  .cookie-panel > summary::before { content:'›'; color:var(--muted); } .cookie-panel[open] > summary::before { transform:rotate(90deg); }
+  .cookie-panel > summary::-webkit-details-marker { display:none; }
+  .cookie-status { font-size:11px; font-weight:400; color:var(--muted); margin-left:auto; }
+  .cookie-status.ok { color:var(--ok); } .cookie-status.warn { color:var(--warn); }
+  .cookie-body { padding-top:16px; } .cookie-body ol { color:var(--muted); padding-left:20px; font-size:13px; } .cookie-body li { margin-bottom:10px; }
+  .cookie-body code { color:var(--text); } .cookie-actions { margin-top:10px; }
+  a.bookmarklet { display:inline-block; padding:7px 12px; border:1px solid var(--accent); color:var(--text); border-radius:6px; text-decoration:none; font-size:12px; cursor:grab; }
+  .settings-section { border-top:1px solid var(--border); padding-top:20px; margin-top:22px; }
+  #import-msg,#cookie-msg,#pacing-msg { display:block; margin-top:6px; color:var(--muted); font-size:12px; }
+  @media(max-width:640px) { .topbar-inner { padding:16px 18px; } .brand small { display:none; } main { padding:28px 18px; } h1 { font-size:26px; } .library-heading { flex-direction:column; align-items:stretch; gap:18px; } .search-box { width:100%; } .grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; } .status { gap:2px; } .status .pill { padding:7px 8px; font-size:12px; } .body { padding:10px; } .media { aspect-ratio:3/4; } dialog { padding:20px; } .actions { gap:6px; } .actions button { padding:9px 12px; } .queue-overview .actions { width:100%; } .controls { align-items:stretch; } .controls input { flex-basis:100%; } }
+  @media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none !important; transition:none !important; } }
 </style>
 </head>
 <body>
-<header>
-  <h1>Soap — TikTok Repost Backup</h1>
-  <div class="controls">
-    <input id="single-url" type="text" placeholder="Add one TikTok video URL (good for testing)" autocomplete="off" spellcheck="false">
-    <button id="single-add">Add</button>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/" aria-label="Soap home"><span class="brand-mark" aria-hidden="true">s</span> soap <small>Your TikTok archive</small></a>
+    <div class="actions"><button id="open-settings" class="secondary">Settings</button><button data-open-add>＋ Add videos</button></div>
   </div>
-  <div class="controls" style="margin-top:6px;">
-    <input id="search" type="search" placeholder="Search title, uploader, URL…  (Esc to clear)" autocomplete="off" spellcheck="false">
-    <span id="search-stats" class="cookie-status" style="white-space:nowrap;">…</span>
-  </div>
-  <div class="status" id="status">
-    <span class="pill" data-status="Ready" title="Click to filter"><span class="dot ready"></span> <span id="ct-ready">0</span> backed up</span>
-    <span class="pill" data-status="Downloading" title="Click to filter"><span class="dot downloading"></span> <span id="ct-downloading">0</span> downloading</span>
-    <span class="pill" data-status="Queued" title="Click to filter"><span class="dot queued"></span> <span id="ct-queued">0</span> queued</span>
-    <span class="pill" data-status="Failed" title="Click to filter"><span class="dot failed"></span> <span id="ct-failed">0</span> failed</span>
-    <button id="pause-toggle" class="secondary" style="margin-left:auto;padding:4px 10px;font-size:12px;">Pause</button>
-    <button id="refresh-titles" class="secondary" style="padding:4px 10px;font-size:12px;">Refresh titles</button>
-    <button id="retry-failed" class="secondary" style="padding:4px 10px;font-size:12px;" hidden>Retry failed</button>
-  </div>
-  <div id="toast" class="toast" hidden></div>
 </header>
-<section class="panels">
+<main>
+  <div id="connection-error" class="connection-error" role="alert" hidden>Connection lost. Your library will refresh automatically when Soap is available.</div>
+  <div class="library-heading">
+    <div><h1>Your library</h1><p id="search-stats">Loading your videos…</p><p class="sort-note">Newest reposts first</p></div>
+    <div class="search-box"><label class="sr-only" for="search">Search your library</label><input id="search" type="search" placeholder="Search videos or creators…" autocomplete="off"></div>
+  </div>
+  <nav class="status" id="status" aria-label="Filter videos by status">
+    <button class="pill active" data-status="" aria-pressed="true">All videos <span class="count" id="ct-total">0</span></button>
+    <button class="pill" data-status="Ready" aria-pressed="false"><span class="dot ready"></span>Saved <span class="count" id="ct-ready">0</span></button>
+    <button class="pill" data-status="Downloading" aria-pressed="false"><span class="dot downloading"></span>Saving <span class="count" id="ct-downloading">0</span></button>
+    <button class="pill" data-status="Queued" aria-pressed="false"><span class="dot queued"></span>Waiting <span class="count" id="ct-queued">0</span></button>
+    <button class="pill" data-status="Failed" aria-pressed="false"><span class="dot failed"></span>Needs attention <span class="count" id="ct-failed">0</span></button>
+  </nav>
+  <section class="queue-panel" id="queue-panel" aria-label="Download activity" hidden>
+    <div class="queue-overview">
+      <div><div id="queue-summary"></div><p id="queue-note"></p></div>
+      <div class="actions"><button id="retry-failed" class="secondary" hidden>Retry failed</button><button id="pause-toggle" class="secondary">Pause</button></div>
+    </div>
+    <div id="active-banner" class="active-banner" hidden><span class="spinner" aria-hidden="true"></span><span class="what">Saving <span id="active-what"></span></span><span id="active-progress"></span></div>
+    <div id="refresh-banner" class="active-banner" hidden><span class="spinner" aria-hidden="true"></span><span class="what">Updating titles: <span id="refresh-what"></span></span><span id="refresh-progress"></span></div>
+  </section>
+  <div id="grid" class="grid"></div>
+  <div id="empty" class="empty" hidden>
+    <div class="empty-symbol" aria-hidden="true">↙</div><h2 id="empty-title">Keep your favorites here</h2>
+    <p id="empty-description">Save a TikTok video or import your reposts. Your copies stay in this library, ready to watch and share.</p>
+    <button id="empty-add" data-open-add>Add your first video</button><button id="clear-filters" class="secondary" hidden>Clear filters</button>
+  </div>
+</main>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<dialog id="add-dialog" aria-labelledby="add-heading">
+  <div class="dialog-heading"><h2 id="add-heading">Add videos</h2><button class="quiet" data-close-dialog aria-label="Close add videos">×</button></div>
+  <p class="intro">Paste a video link, or bring in a whole collection.</p>
+  <label class="field-label" for="single-url">Video URL</label>
+  <div class="controls"><input id="single-url" aria-describedby="single-msg" type="url" placeholder="https://www.tiktok.com/@creator/video/…" autocomplete="off" spellcheck="false"><button id="single-add">Save video</button></div>
+  <p id="single-msg" role="status" class="error" hidden></p>
+  <section class="import-section" id="import-panel">
+    <h3>Import a collection</h3>
+    <label class="field-label" for="import-input">Video URLs, newest repost first (one per line)</label>
+    <textarea id="import-input" placeholder="Paste your collected links here…" spellcheck="false" rows="4"></textarea>
+    <div class="cookie-actions"><button id="import-submit">Import videos</button><button id="import-paste" class="secondary">Paste from clipboard</button></div>
+    <span id="import-msg" role="status"></span>
+  </section>
   <details id="bookmarklet-panel" class="cookie-panel">
     <summary>
-      <span>Bookmarklet (recommended for reposts)</span>
-      <span class="cookie-status">drag the button to your bookmarks bar</span>
+      <span>Collect your reposts from TikTok</span>
+      <span class="cookie-status">Setup guide</span>
     </summary>
     <div class="cookie-body">
       <p style="margin:0 0 8px;color:var(--muted);font-size:13px;">
-        TikTok's Content Security Policy blocks scripts on their page from POSTing to us directly. Workaround: the bookmarklet scrolls the page, collects video links, and copies them to your <strong>clipboard</strong>. You then paste them into the panel below.
+        The bookmarklet collects video links while you browse TikTok. It copies them to your clipboard so you can import them here.
       </p>
       <ol>
         <li>Make sure your bookmarks bar is visible (Chrome/Firefox: <code>Ctrl+Shift+B</code>).</li>
         <li>Drag this button onto it: <a id="bookmarklet-link" class="bookmarklet" href="#" draggable="true">📥 Soap reposts</a></li>
         <li>Go to your TikTok reposts page: <code>tiktok.com/@yourname</code> → click the <strong>Reposts</strong> tab.</li>
         <li>Click the <strong>Soap reposts</strong> bookmark. It auto-scrolls, then copies all video URLs to your clipboard.</li>
-        <li>Switch to this tab → paste (Ctrl+V) into the <strong>Paste URLs</strong> panel below → click <strong>Import</strong>.</li>
+        <li>Return here, paste (Ctrl+V) into <strong>Import a collection</strong>, then choose <strong>Import videos</strong>.</li>
       </ol>
       <p style="margin:6px 0 0;color:var(--muted);font-size:12px;">
-        Tip: scroll the reposts page a bit yourself first so TikTok loads thumbnails. The bookmarklet auto-scrolls until no new links appear for ~3.5s.
+        Start on your Reposts tab. The bookmarklet collects from the top down so newer reposts appear first in your library.
       </p>
     </div>
   </details>
-  <details id="import-panel" class="cookie-panel">
-    <summary>
-      <span>Paste URLs</span>
-      <span class="cookie-status">paste here after running the bookmarklet</span>
-    </summary>
-    <div class="cookie-body">
-      <textarea id="import-input" placeholder="One URL per line — paste from clipboard (Ctrl+V)" spellcheck="false" style="width:100%;min-height:120px;background:#000;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px;font:12px ui-monospace,Menlo,monospace;resize:vertical;"></textarea>
-      <div class="cookie-actions">
-        <button id="import-submit">Import</button>
-        <button id="import-paste" class="secondary">Paste from clipboard</button>
-        <span id="import-msg" style="color:var(--muted);font-size:12px;"></span>
-      </div>
-    </div>
-  </details>
+</dialog>
+<dialog id="settings-dialog" aria-labelledby="settings-heading">
+  <div class="dialog-heading"><h2 id="settings-heading">Settings</h2><button class="quiet" data-close-dialog aria-label="Close settings">×</button></div>
+  <p class="intro">Manage your TikTok session and how videos are saved.</p>
   <details id="cookie-panel" class="cookie-panel">
     <summary>
       <span>TikTok cookies</span>
@@ -341,7 +183,7 @@
     </summary>
     <div class="cookie-body">
       <p style="margin:0 0 8px;color:var(--muted);font-size:13px;">
-        The reposts tab needs a logged-in session. Paste your TikTok cookie header — no extensions, no extra tools.
+        Some videos need a TikTok login to download. Add your session cookies here if a download asks you to sign in.
       </p>
       <ol>
         <li>Log into <code>tiktok.com</code> in your browser.</li>
@@ -350,7 +192,7 @@
         <li>Copy the line that starts with <code>Cookie:</code> (or just the value after it).</li>
         <li>Paste it below and click <strong>Save</strong>.</li>
       </ol>
-      <textarea id="cookie-input" placeholder="Cookie: tt_csrf_token=...; sessionid=...; sid_tt=...; ..." spellcheck="false"></textarea>
+      <label class="field-label" for="cookie-input">TikTok cookie header</label><textarea id="cookie-input" placeholder="Cookie: tt_csrf_token=...; sessionid=...; sid_tt=...; ..." spellcheck="false"></textarea>
       <div class="cookie-actions">
         <button id="cookie-save">Save cookies</button>
         <button id="cookie-clear" class="secondary" hidden>Clear</button>
@@ -360,19 +202,19 @@
   </details>
   <details id="pacing-panel" class="cookie-panel">
     <summary>
-      <span>Download pacing</span>
+      <span>Download speed</span>
       <span id="pacing-status" class="cookie-status">…</span>
     </summary>
     <div class="cookie-body">
       <p style="margin:0 0 8px;color:var(--muted);font-size:13px;">
-        Random delay between downloads (in milliseconds). Each download waits a random duration in this range before the next one starts. Lower = faster but more likely to trip TikTok's rate limit. Default: 2500–5500 ms.
+        A short break between videos helps avoid TikTok rate limits. The default is 2.5–5.5 seconds. Increase the delay if downloads are being blocked.
       </p>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <label style="display:flex;flex-direction:column;font-size:11px;color:var(--muted);">Min (ms)
-          <input id="pacing-min" type="number" min="0" step="100" style="width:110px;background:#000;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font:inherit;">
+        <label style="display:flex;flex-direction:column;font-size:11px;color:var(--muted);">Minimum delay (ms)
+          <input id="pacing-min" type="number" min="0" max="120000" step="100" style="width:110px;background:#000;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font:inherit;">
         </label>
-        <label style="display:flex;flex-direction:column;font-size:11px;color:var(--muted);">Max (ms)
-          <input id="pacing-max" type="number" min="0" step="100" style="width:110px;background:#000;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font:inherit;">
+        <label style="display:flex;flex-direction:column;font-size:11px;color:var(--muted);">Maximum delay (ms)
+          <input id="pacing-max" type="number" min="0" max="120000" step="100" style="width:110px;background:#000;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font:inherit;">
         </label>
         <button id="pacing-save" style="align-self:flex-end;">Save</button>
         <span id="pacing-msg" style="color:var(--muted);font-size:12px;align-self:flex-end;"></span>
@@ -385,25 +227,24 @@
       </div>
     </div>
   </details>
-</section>
-<main>
-  <div id="active-banner" class="active-banner" hidden>
-    <span class="spinner"></span>
-    <span class="what"><span class="label">Now downloading:</span> <span id="active-what"></span></span>
-    <span id="active-progress" class="label"></span>
-  </div>
-  <div id="refresh-banner" class="active-banner" style="border-color: var(--muted);" hidden>
-    <span class="spinner" style="border-color: rgba(138,143,153,.25); border-top-color: var(--muted);"></span>
-    <span class="what"><span class="label">Refreshing title:</span> <span id="refresh-what"></span></span>
-    <span id="refresh-progress" class="label"></span>
-  </div>
-  <div id="grid" class="grid"></div>
-  <div id="empty" class="empty" hidden>No reposts yet. Use the bookmarklet (see panel above) to collect URLs from TikTok, then paste them in.</div>
-</main>
+  <section class="settings-section"><h3>Library maintenance</h3><p class="muted">Update video titles from TikTok. Your saved files stay in place.</p><button id="refresh-titles" class="secondary">Refresh titles</button></section>
+</dialog>
 <script>
 const $ = id => document.getElementById(id);
 let pollTimer = null;
 let activePoll = false;
+let toastTimer = null;
+let gridRequest = 0;
+let lastGridSignature = null;
+
+document.querySelectorAll('[data-open-add]').forEach(button => button.addEventListener('click', () => $('add-dialog').showModal()));
+$('open-settings').addEventListener('click', () => $('settings-dialog').showModal());
+document.querySelectorAll('[data-close-dialog]').forEach(button => button.addEventListener('click', () => button.closest('dialog').close()));
+document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('click', event => {
+  if (event.target !== dialog) return;
+  const rect = dialog.getBoundingClientRect();
+  if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close();
+}));
 
 async function jget(url) {
   const r = await fetch(url);
@@ -414,11 +255,17 @@ async function jget(url) {
 async function refreshStatus() {
   try {
     const s = await jget('/reposts/status');
+    $('ct-total').textContent = s.total;
     $('ct-ready').textContent = s.ready;
     $('ct-downloading').textContent = s.downloading;
     $('ct-queued').textContent = s.queued;
     $('ct-failed').textContent = s.failed;
     $('retry-failed').hidden = s.failed === 0;
+    const remaining = s.queued + s.downloading;
+    $('queue-panel').hidden = !remaining && !s.failed && !s.paused && !s.titleRefresh?.pending;
+    $('pause-toggle').hidden = !remaining && !s.paused;
+    $('queue-summary').textContent = s.paused ? 'Downloads paused' : remaining ? `${remaining} ${remaining === 1 ? 'video' : 'videos'} left to save` : s.failed ? `${s.failed} ${s.failed === 1 ? 'video needs' : 'videos need'} attention` : 'Updating your library';
+    $('queue-note').textContent = s.paused ? 'Resume when you’re ready. Any video already in progress will finish.' : remaining ? 'Videos save one at a time, with a short break between downloads.' : s.failed ? 'Check the details on a failed video, or retry all failed downloads.' : 'Titles update in the background.';
 
     // Pause/Resume label tracks the server-side flag (in case multiple tabs/clients).
     const pauseBtn = $('pause-toggle');
@@ -443,7 +290,7 @@ async function refreshStatus() {
       what.appendChild(link);
       const pending = s.queued + s.downloading;
       $('active-progress').textContent = pending > 1
-        ? `${s.ready + s.failed + 1} of ${s.ready + s.failed + pending}`
+        ? `${s.queued} waiting`
         : '';
       banner.hidden = false;
     } else {
@@ -498,7 +345,9 @@ function matchesFilter(item) {
 
 async function refreshGrid() {
   const grid = $('grid');
+  const request = ++gridRequest;
   const items = await jget('/reposts');
+  if (request !== gridRequest) return;
   const filtered = items.filter(matchesFilter);
 
   const stats = $('search-stats');
@@ -509,16 +358,15 @@ async function refreshGrid() {
   }
 
   const empty = $('empty');
-  if (items.length === 0) {
-    empty.hidden = false;
-    empty.textContent = 'No reposts yet. Use the bookmarklet (see panel above) to collect URLs from TikTok, then paste them in.';
-  } else if (filtered.length === 0) {
-    empty.hidden = false;
-    empty.textContent = `No matches for the current filter.`;
-  } else {
-    empty.hidden = true;
-  }
+  empty.hidden = filtered.length !== 0;
+  $('empty-title').textContent = items.length ? 'No videos match' : 'Keep your favorites here';
+  $('empty-description').textContent = items.length ? 'Try a different search or clear the status filter.' : 'Save a TikTok video or import your reposts. Your copies stay in this library, ready to watch and share.';
+  $('empty-add').hidden = items.length !== 0;
+  $('clear-filters').hidden = items.length === 0;
 
+  const signature = JSON.stringify(filtered);
+  if (signature === lastGridSignature) return;
+  lastGridSignature = signature;
   grid.innerHTML = '';
   for (const item of filtered) {
     grid.appendChild(renderCard(item));
@@ -526,10 +374,10 @@ async function refreshGrid() {
 }
 
 const STATUS_LABEL = {
-  Queued: 'Queued',
-  Downloading: 'Downloading',
-  Ready: 'Backed up',
-  Failed: 'Failed'
+  Queued: 'Waiting',
+  Downloading: 'Saving',
+  Ready: 'Saved',
+  Failed: 'Needs attention'
 };
 
 function renderCard(item) {
@@ -556,7 +404,7 @@ function renderCard(item) {
       img.src = item.thumbnailUrl;
       img.loading = 'lazy';
       img.alt = item.title || '';
-      img.onerror = () => { img.style.display = 'none'; };
+      img.onerror = () => { img.remove(); };
       link.appendChild(img);
     }
 
@@ -575,8 +423,8 @@ function renderCard(item) {
     const ph = document.createElement('div');
     ph.className = 'placeholder';
     ph.textContent = item.status === 'Failed'
-      ? (item.errorMessage || 'Download failed')
-      : 'Waiting…';
+      ? 'This video couldn’t be saved'
+      : item.status === 'Downloading' ? 'Saving your video…' : 'Waiting for its turn';
     media.appendChild(ph);
   }
 
@@ -602,11 +450,32 @@ function renderCard(item) {
   body.appendChild(title);
   body.appendChild(meta);
 
-  if (item.status === 'Failed' && item.errorMessage) {
-    const err = document.createElement('div');
-    err.className = 'error';
-    err.textContent = item.errorMessage;
-    body.appendChild(err);
+  if (item.status === 'Failed') {
+    if (item.errorMessage) {
+      const err = document.createElement('details');
+      err.className = 'error';
+      const summary = document.createElement('summary');
+      summary.textContent = 'Why it failed';
+      const reason = document.createElement('p');
+      reason.textContent = item.errorMessage;
+      err.append(summary, reason);
+      body.appendChild(err);
+    }
+    const retry = document.createElement('button');
+    retry.className = 'secondary retry-one';
+    retry.textContent = 'Try again';
+    retry.addEventListener('click', async () => {
+      retry.disabled = true;
+      try {
+        const response = await fetch('/reposts/' + item.id + '/retry', { method: 'POST' });
+        if (!response.ok) throw new Error('Could not retry this video');
+        showToast('Video queued to try again.');
+        await refreshGrid();
+        ensurePolling();
+      } catch (error) { showToast(error.message, true); }
+      finally { retry.disabled = false; }
+    });
+    body.appendChild(retry);
   }
 
   card.appendChild(media);
@@ -616,31 +485,42 @@ function renderCard(item) {
 
 async function poll() {
   if (activePoll) return;
+  clearTimeout(pollTimer);
+  pollTimer = null;
   activePoll = true;
+  let delay = 5000;
   try {
     const s = await refreshStatus();
+    if (!s) throw new Error('Connection lost');
     await refreshGrid();
-    const titleRefreshActive = s && s.titleRefresh && s.titleRefresh.pending > 0;
-    if (s && (s.queued > 0 || s.downloading > 0 || titleRefreshActive)) {
-      pollTimer = setTimeout(poll, 2000);
-    } else {
-      pollTimer = null;
-    }
+    $('connection-error').hidden = true;
+    if ((!s.paused && (s.queued || s.downloading)) || s.titleRefresh?.pending) delay = 2000;
+  } catch (error) {
+    $('connection-error').hidden = false;
   } finally {
     activePoll = false;
+    pollTimer = setTimeout(poll, delay);
   }
 }
 
 function ensurePolling() {
-  if (pollTimer) return;
+  clearTimeout(pollTimer);
+  pollTimer = null;
   poll();
 }
 
 function showToast(msg, isWarn) {
+  if ($('add-dialog').open && isWarn) {
+    $('single-msg').textContent = msg;
+    $('single-msg').hidden = false;
+    return;
+  }
   const el = $('toast');
   el.textContent = msg;
   el.hidden = false;
   el.classList.toggle('warn', !!isWarn);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.hidden = true, 8000);
 }
 
 async function addSingleUrl(url) {
@@ -648,6 +528,7 @@ async function addSingleUrl(url) {
   btn.disabled = true;
   btn.textContent = 'Adding…';
   $('toast').hidden = true;
+  $('single-msg').hidden = true;
   try {
     const profile = (url.match(/@([\w.-]+)/) || [])[1] || null;
     const r = await fetch('/reposts/bulk', {
@@ -658,20 +539,22 @@ async function addSingleUrl(url) {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     if (d.queued > 0) {
-      showToast(`Added — watch the gallery to see it appear (downloads are paced ${($('pacing-min').value/1000).toFixed(1)}–${($('pacing-max').value/1000).toFixed(1)}s apart).`, false);
+      showToast('Video added. You can follow its progress in your library.', false);
     } else if (d.alreadyKnown > 0) {
-      showToast('Already in gallery — scroll down to find it. To re-download a failed one, use Retry failed.', false);
+      showToast('This video is already in your library. If it failed, use Try again on its card.', false);
     } else {
-      showToast(`Skipped (invalid URL?). Skipped: ${d.skipped}`, true);
+      showToast('This link could not be added. Check the video URL and try again.', true);
+      return;
     }
     $('single-url').value = '';
+    $('add-dialog').close();
     await refreshGrid();
     ensurePolling();
   } catch (e) {
     showToast('Error: ' + e.message, true);
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Add';
+    btn.textContent = 'Save video';
   }
 }
 
@@ -695,13 +578,13 @@ async function refreshCookieState() {
     const status = $('cookie-status');
     const panel = $('cookie-panel');
     if (present) {
-      status.textContent = '✓ set';
+      status.textContent = 'Cookies saved';
       status.className = 'cookie-status ok';
       panel.dataset.state = 'ok';
       panel.open = false;
       $('cookie-clear').hidden = false;
     } else {
-      status.textContent = 'not set — required for reposts';
+      status.textContent = 'Not set';
       status.className = 'cookie-status warn';
       panel.dataset.state = 'missing';
       panel.open = true;
@@ -742,9 +625,18 @@ $('cookie-save').addEventListener('click', async () => {
 
 $('cookie-clear').addEventListener('click', async () => {
   if (!confirm('Delete saved TikTok cookies?')) return;
-  await fetch('/cookies', { method: 'DELETE' });
-  $('cookie-msg').textContent = 'cookies cleared.';
-  await refreshCookieState();
+  const button = $('cookie-clear');
+  button.disabled = true;
+  try {
+    const response = await fetch('/cookies', { method: 'DELETE' });
+    if (!response.ok) throw new Error('Could not clear cookies. Please try again.');
+    $('cookie-msg').textContent = 'Cookies cleared.';
+    await refreshCookieState();
+  } catch (error) {
+    $('cookie-msg').textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
 });
 
 // --- Bookmarklet ---
@@ -772,6 +664,8 @@ function soapBookmarkletBody() {
     toast.style.cssText = 'position:fixed;top:16px;right:16px;z-index:2147483647;background:#0c0d10;color:#e6e8ec;padding:10px 14px;border-radius:8px;font:14px -apple-system,BlinkMacSystemFont,sans-serif;border:1px solid #444;max-width:340px;box-shadow:0 4px 20px rgba(0,0,0,.4);';
     toast.textContent = 'Soap: collecting…';
     document.body.appendChild(toast);
+    window.scrollTo(0, 0);
+    await new Promise(r => setTimeout(r, SCROLL_DELAY));
     collect();
     let last = 0, stable = 0;
     for (let i = 0; i < MAX_SCROLLS; i++) {
@@ -853,6 +747,10 @@ async function submitImport(urls) {
     const d = await r.json();
     msg.textContent = `imported: ${d.queued} new, ${d.alreadyKnown} known, ${d.skipped} skipped`;
     $('import-input').value = '';
+    if (d.queued > 0) {
+      $('add-dialog').close();
+      showToast(`${d.queued} videos added${d.alreadyKnown ? ` · ${d.alreadyKnown} already in your library` : ''}.`);
+    }
     await refreshGrid();
     ensurePolling();
   } catch (e) {
@@ -873,7 +771,7 @@ $('refresh-titles').addEventListener('click', async () => {
   btn.textContent = 'queueing…';
   try {
     // ?all=true refreshes every entry, not just missing/bogus ones — useful
-    // when you want to re-fetch everything (e.g. after fixing cookies).
+    // when you want to re-fetch everything (e.g. after updating cookies).
     const r = await fetch('/reposts/refresh-titles?all=true', { method: 'POST' });
     const d = await r.json();
     btn.textContent = d.queued > 0 ? `queued ${d.queued}` : 'nothing to refresh';
@@ -900,8 +798,8 @@ $('pause-toggle').addEventListener('click', async () => {
     const d = await r.json();
     showToast(
       d.paused
-        ? 'Downloads paused. Title refreshes still work — useful for changing pacing first.'
-        : (d.requeued > 0 ? `Resumed — re-queued ${d.requeued} pending downloads.` : 'Resumed.'),
+        ? 'Downloads paused. Resume whenever you’re ready.'
+        : (d.requeued > 0 ? `Resumed. ${d.requeued} videos are waiting to save.` : 'Resumed.'),
       false);
     await refreshStatus();
     ensurePolling();
@@ -989,42 +887,45 @@ document.querySelectorAll('.pacing-preset').forEach(btn => {
 // --- Search + status filter wiring ---
 $('search').addEventListener('input', () => {
   searchQuery = $('search').value.trim();
-  refreshGrid();
+  refreshGrid().catch(() => $('connection-error').hidden = false);
 });
 $('search').addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     $('search').value = '';
     searchQuery = '';
-    refreshGrid();
+    refreshGrid().catch(() => $('connection-error').hidden = false);
   }
 });
 
 function syncPillActive() {
   document.querySelectorAll('.status .pill').forEach(p => {
-    p.classList.toggle('active', p.dataset.status === statusFilter);
+    const active = (p.dataset.status || null) === statusFilter;
+    p.classList.toggle('active', active);
+    p.setAttribute('aria-pressed', String(active));
   });
 }
 
 document.querySelectorAll('.status .pill').forEach(p => {
   p.addEventListener('click', () => {
-    const s = p.dataset.status;
+    const s = p.dataset.status || null;
     statusFilter = statusFilter === s ? null : s;
     syncPillActive();
-    refreshGrid();
+    refreshGrid().catch(() => $('connection-error').hidden = false);
   });
 });
 
-// Initial load
+$('clear-filters').addEventListener('click', () => {
+  searchQuery = '';
+  statusFilter = null;
+  $('search').value = '';
+  syncPillActive();
+  refreshGrid().catch(() => $('connection-error').hidden = false);
+});
+
+// Keep the library current, including imports from another tab.
 refreshCookieState();
 refreshPacingState();
-refreshStatus().then(s => {
-  // First-time user (nothing imported yet)? Show the instructions panels.
-  if (s && s.total === 0) {
-    $('bookmarklet-panel').open = true;
-    $('import-panel').open = true;
-  }
-  return refreshGrid();
-}).then(ensurePolling);
+ensurePolling();
 </script>
 </body>
 </html>

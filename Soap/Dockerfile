@@ -1,25 +1,23 @@
 # syntax=docker/dockerfile:1.7
 
-# ---------- Runtime base (with ffmpeg + yt-dlp) ----------
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS base
-
-# ffmpeg gives us ffmpeg + ffprobe; ca-certificates + curl needed to fetch yt-dlp.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg ca-certificates curl \
- && rm -rf /var/lib/apt/lists/*
-
-# yt-dlp's "linux" build is a PyInstaller bundle — no Python install required.
-# Pin to a known-good release tag via build-arg if you want reproducibility;
-# default pulls the latest release at image-build time.
+# Refresh this stage with --no-cache-filter media-tools to pick up new releases.
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS media-tools
+ARG TARGETARCH
 ARG YTDLP_VERSION=latest
-RUN if [ "$YTDLP_VERSION" = "latest" ]; then \
-      curl -fsSL -o /usr/local/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux ; \
-    else \
-      curl -fsSL -o /usr/local/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux ; \
-    fi \
- && chmod +x /usr/local/bin/yt-dlp \
- && /usr/local/bin/yt-dlp --version
+ARG FFMPEG_VERSION=latest
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY docker/install-media-tools.py /tmp/install-media-tools.py
+RUN TARGETARCH="$TARGETARCH" YTDLP_VERSION="$YTDLP_VERSION" FFMPEG_VERSION="$FFMPEG_VERSION" \
+    python3 /tmp/install-media-tools.py
 
+# ---------- Runtime base (with current stable ffmpeg + ffprobe + yt-dlp) ----------
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS base
+COPY --from=media-tools /tools/ /usr/local/bin/
+RUN /usr/local/bin/yt-dlp --version \
+ && /usr/local/bin/ffmpeg -version \
+ && /usr/local/bin/ffprobe -version
 WORKDIR /app
 EXPOSE 8080
 

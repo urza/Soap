@@ -48,23 +48,6 @@ var coordinator = app.Services.GetRequiredService<PreviewCoordinator>();
 var repostStore = app.Services.GetRequiredService<RepostStore>();
 var mediaCache = app.Services.GetRequiredService<MediaCacheService>();
 
-// Resume any work that was in flight when the previous instance stopped.
-// Downloading entries get reset to Queued (the new semantics reserve Downloading
-// for "yt-dlp actively running"). Both Queued and just-reset entries are re-fed
-// to the coordinator so they actually get processed — otherwise they'd sit
-// Queued forever until the user clicks something.
-var pending = repostStore.GetAll()
-    .Where(e => e.Status == RepostStatus.Queued || e.Status == RepostStatus.Downloading)
-    .ToList();
-foreach (var e in pending)
-{
-    if (e.Status == RepostStatus.Downloading)
-        repostStore.Update(e.Url, x => x.Status = RepostStatus.Queued);
-    coordinator.Queue(e.Url, includeMedia: true);
-}
-if (pending.Count > 0)
-    app.Logger.LogInformation("Resumed {Count} pending entries on startup", pending.Count);
-
 // Backfill local poster JPEGs for any Ready entries that don't have one yet
 // (e.g. backed up before this feature existed, or whose stored ThumbnailUrl is a
 // remote OG URL that won't load in a browser). Runs in the background so it
@@ -115,7 +98,7 @@ coordinator.OnLinkPreviewReady += (_, url, preview) =>
 {
     repostStore.Update(url, e =>
     {
-        if (!preview.Failed)
+        if (!preview.Failed && e.Status != RepostStatus.Ready)
         {
             e.Title = preview.Title;
             e.Description = preview.Description;
@@ -176,6 +159,23 @@ var settings = app.Services.GetRequiredService<LinkPreviewSettingsService>();
 if (!settings.Enabled) await settings.SetEnabledAsync(true);
 if (!settings.MediaCachingEnabled) await settings.SetMediaCachingEnabledAsync(true);
 
+// Resume any work that was in flight when the previous instance stopped.
+// Downloading entries get reset to Queued (the new semantics reserve Downloading
+// for "yt-dlp actively running"). Both Queued and just-reset entries are re-fed
+// to the coordinator so they actually get processed — otherwise they'd sit
+// Queued forever until the user clicks something.
+var pending = repostStore.GetAll()
+    .Where(e => e.Status == RepostStatus.Queued || e.Status == RepostStatus.Downloading)
+    .ToList();
+foreach (var e in pending)
+{
+    if (e.Status == RepostStatus.Downloading)
+        repostStore.Update(e.Url, x => x.Status = RepostStatus.Queued);
+    coordinator.Queue(e.Url, includeMedia: true);
+}
+if (pending.Count > 0)
+    app.Logger.LogInformation("Resumed {Count} pending entries on startup", pending.Count);
+
 // Serve cached media files from Data/media-cache/ at /media-cache/...
 var mediaCachePath = Path.Combine(app.Environment.ContentRootPath, "Data", "media-cache");
 Directory.CreateDirectory(mediaCachePath);
@@ -223,32 +223,27 @@ app.MapPost("/reposts/bulk", (BulkImportRequest req, RepostStore store, PreviewC
     if (req.Urls == null || req.Urls.Count == 0)
         return Results.BadRequest(new { error = "urls is required" });
 
-    int newCount = 0, knownCount = 0, skipped = 0;
+    var validUrls = new List<string>();
+    int skipped = 0;
     foreach (var raw in req.Urls)
     {
         var url = (raw ?? "").Trim();
-        if (url.Length == 0) { skipped++; continue; }
-        if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
-            !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
             skipped++;
             continue;
         }
-        if (store.TryAdd(url, req.SourceProfile))
-        {
-            newCount++;
-            coord.Queue(url, includeMedia: true);
-        }
-        else
-        {
-            knownCount++;
-        }
+        validUrls.Add(url);
     }
+    var added = store.ImportNewestFirst(validUrls, req.SourceProfile);
+    foreach (var url in added)
+        coord.Queue(url, includeMedia: true);
 
     return Results.Ok(new
     {
-        queued = newCount,
-        alreadyKnown = knownCount,
+        queued = added.Count,
+        alreadyKnown = validUrls.Count - added.Count,
         skipped,
         total = req.Urls.Count
     });
@@ -351,6 +346,23 @@ app.MapPost("/reposts/retry-failed", (RepostStore store, MediaCacheService media
         coord.Queue(e.Url, includeMedia: true);
     }
     return Results.Ok(new { retried = failed.Count });
+});
+
+// Retry an individual failed card without restarting every failed download.
+app.MapPost("/reposts/{id}/retry", (string id, RepostStore store, MediaCacheService mediaSvc, PreviewCoordinator coord) =>
+{
+    var entry = store.GetById(id);
+    if (entry == null) return Results.NotFound();
+    if (entry.Status != RepostStatus.Failed) return Results.Ok(new { retried = 0 });
+    mediaSvc.ForgetFailure(entry.Url);
+    store.Update(entry.Url, e =>
+    {
+        e.Status = RepostStatus.Queued;
+        e.ErrorMessage = null;
+        e.CompletedAt = null;
+    });
+    coord.Queue(entry.Url, includeMedia: true);
+    return Results.Ok(new { retried = 1 });
 });
 
 // --- Cookie management ---

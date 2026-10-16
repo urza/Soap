@@ -18,9 +18,9 @@ public class MediaCacheService
     private readonly ConcurrentDictionary<string, MediaCacheEntry> _cache = new();
 
     // Failed URLs: don't retry URLs that yt-dlp can't handle (TTL: 1 hour)
-    private readonly ConcurrentDictionary<string, DateTime> _failedUrls = new();
+    private readonly ConcurrentDictionary<string, (DateTime At, string Reason)> _failedUrls = new();
 
-    // Dedup queued downloads (everything between QueueDownload and the finally block).
+    // Dedup queued and running downloads, excluding their post-completion cooldown.
     private readonly ConcurrentDictionary<string, byte> _inFlight = new();
 
     // URLs that have crossed the semaphore — yt-dlp is actively running on them.
@@ -209,78 +209,92 @@ public class MediaCacheService
     /// </summary>
     public void QueueDownload(Guid messageId, string url)
     {
-        if (!IsAvailable) return;
-        if (_downloadsPaused) return; // don't even spawn a task while paused
-
-        // Only http/https
-        if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
-            !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-            return;
-
-        // Already cached (memory or disk)?
-        if (GetOrLoadCachedMedia(url) != null)
-            return;
-
-        // Known failure? (with TTL)
-        if (_failedUrls.TryGetValue(url, out var failedAt) && DateTime.UtcNow - failedAt < FailureCacheTtl)
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
-            _logger.LogDebug("Skipping {Url}: cached failure from {Ago}s ago", url, (DateTime.UtcNow - failedAt).TotalSeconds);
+            OnMediaFailed?.Invoke(messageId, url, "Enter a valid http or https video URL.");
             return;
         }
 
-        // Already in flight?
-        if (!_inFlight.TryAdd(url, 0))
+        // Cached work is complete even while downloads are paused or yt-dlp is absent.
+        var cached = GetOrLoadCachedMedia(url);
+        if (cached != null)
+        {
+            OnMediaCached?.Invoke(messageId, url, cached);
             return;
+        }
+        if (!IsAvailable)
+        {
+            OnMediaFailed?.Invoke(messageId, url, "Downloads are unavailable: yt-dlp is not installed. Install it, restart Soap, then retry.");
+            return;
+        }
+        if (_downloadsPaused) return;
+
+        if (_failedUrls.TryGetValue(url, out var failure) && DateTime.UtcNow - failure.At < FailureCacheTtl)
+        {
+            OnMediaFailed?.Invoke(messageId, url, failure.Reason);
+            return;
+        }
+        if (!_inFlight.TryAdd(url, 0)) return;
 
         _ = Task.Run(async () =>
         {
             await _downloadSemaphore.WaitAsync();
-            // Pause could have been set while we were waiting — bail out fast (no
-            // pacing delay, no event fire) so the queue drains and the user can
-            // shift to title-refresh work without sitting through a long cooldown.
             if (_downloadsPaused)
             {
-                _downloadSemaphore.Release();
                 _inFlight.TryRemove(url, out _);
+                _downloadSemaphore.Release();
                 return;
             }
-            _active[url] = DateTime.UtcNow;
-            OnMediaDownloadStarting?.Invoke(messageId, url);
+
+            MediaCacheEntry? result = null;
+            string? reason = null;
             try
             {
-                var (result, reason) = await DownloadMediaAsync(messageId, url);
+                _active[url] = DateTime.UtcNow;
+                OnMediaDownloadStarting?.Invoke(messageId, url);
+                (result, reason) = await DownloadMediaAsync(messageId, url);
                 if (result != null)
-                {
                     _cache[url] = result;
-                    OnMediaCached?.Invoke(messageId, url, result);
-                }
-                else
-                {
-                    _failedUrls[url] = DateTime.UtcNow;
-                    OnMediaFailed?.Invoke(messageId, url, reason ?? "yt-dlp could not download this URL");
-                }
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to cache media for {Url}", url);
-                _failedUrls[url] = DateTime.UtcNow;
-                OnMediaFailed?.Invoke(messageId, url, ex.Message);
+                reason = ex.Message;
+            }
+
+            reason ??= "Could not download this video. Check the URL and cookies, then retry.";
+            if (result == null)
+                _failedUrls[url] = (DateTime.UtcNow, reason);
+
+            // Release deduplication before notifying the UI. A retry can now queue
+            // behind the semaphore while this completed job finishes its cooldown.
+            _active.TryRemove(url, out _);
+            _inFlight.TryRemove(url, out _);
+            try
+            {
+                if (result != null)
+                    OnMediaCached?.Invoke(messageId, url, result);
+                else
+                    OnMediaFailed?.Invoke(messageId, url, reason);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to report download completion for {Url}", url);
             }
             finally
             {
-                _active.TryRemove(url, out _);
-                // Pace the next download — held inside the semaphore so the next
-                // queued task can't start until we've waited the cooldown.
                 try
                 {
                     var min = _pacing.MinDelayMs;
-                    var max = Math.Max(min + 1, _pacing.MaxDelayMs + 1); // Random.Next is exclusive on max
+                    var max = Math.Max(min + 1, _pacing.MaxDelayMs + 1);
                     var delay = min == 0 && max == 1 ? 0 : Random.Shared.Next(min, max);
                     if (delay > 0) await Task.Delay(delay);
                 }
-                catch { /* don't block release on a delay error */ }
-                _downloadSemaphore.Release();
-                _inFlight.TryRemove(url, out _);
+                finally
+                {
+                    _downloadSemaphore.Release();
+                }
             }
         });
     }
@@ -344,6 +358,23 @@ public class MediaCacheService
 
     private async Task<(MediaCacheEntry? Entry, string? Reason)> DownloadMediaAsync(Guid messageId, string url)
     {
+        var workDirectory = Path.Combine(_env.ContentRootPath, "Data", "media-work", ComputeHash(url));
+        // A previous process may have stopped in the middle of writing these files.
+        if (Directory.Exists(workDirectory)) Directory.Delete(workDirectory, recursive: true);
+        Directory.CreateDirectory(workDirectory);
+        try
+        {
+            return await DownloadMediaToCacheAsync(messageId, url, workDirectory);
+        }
+        finally
+        {
+            try { Directory.Delete(workDirectory, recursive: true); }
+            catch (Exception ex) { _logger.LogDebug(ex, "Could not remove download workspace {Path}", workDirectory); }
+        }
+    }
+
+    private async Task<(MediaCacheEntry? Entry, string? Reason)> DownloadMediaToCacheAsync(Guid messageId, string url, string workDirectory)
+    {
         var sw = Stopwatch.StartNew();
         var hash = ComputeHash(url);
 
@@ -362,7 +393,7 @@ public class MediaCacheService
 
         // Route Spotify URLs to spotdl
         if (IsSpotifyUrl(url))
-            return await DownloadSpotifyAsync(url, hash, sw);
+            return await DownloadSpotifyAsync(url, hash, sw, workDirectory);
 
         // Step 1: Get metadata — duration + title + uploader.
         var (metadata, metaReason) = await GetMetadataAsync(url);
@@ -384,8 +415,8 @@ public class MediaCacheService
         }
 
         // Step 2: Download — try video first, fall back to audio-only
-        var outputPathMp4 = Path.Combine(CacheDirectory, $"{hash}.mp4");
-        var outputPathAudio = Path.Combine(CacheDirectory, $"{hash}.mp3");
+        var outputPathMp4 = Path.Combine(workDirectory, $"{hash}.mp4");
+        var outputPathAudio = Path.Combine(workDirectory, $"{hash}.mp3");
 
         // Try video download first — prefer H.264 for browser compatibility
         var cookies = CookiesArg();
@@ -414,7 +445,7 @@ public class MediaCacheService
         }
 
         // yt-dlp may output with a different extension — find the actual file
-        var actualPath = FindOutputFile(hash);
+        var actualPath = FindOutputFile(hash, workDirectory);
         if (actualPath == null)
         {
             _logger.LogWarning("yt-dlp completed but output file not found for {Url}", url);
@@ -431,11 +462,11 @@ public class MediaCacheService
         if (mediaType == CachedMediaType.Video && !await IsH264Async(actualPath))
         {
             _logger.LogInformation("Re-encoding {File} to H.264 for browser compatibility", Path.GetFileName(actualPath));
-            var reEncodedPath = Path.Combine(CacheDirectory, $"{hash}_h264.mp4");
+            var reEncodedPath = Path.Combine(workDirectory, $"{hash}_h264.mp4");
             var ffmpegResult = await RunProcessAsync("ffmpeg",
                 $"-i \"{actualPath}\" -c:v libx264 -crf 23 -preset fast -c:a aac -movflags +faststart -y \"{reEncodedPath}\"",
                 DownloadTimeoutMs);
-            if (ffmpegResult == 0 && File.Exists(reEncodedPath))
+            if (ffmpegResult == 0 && File.Exists(reEncodedPath) && new FileInfo(reEncodedPath).Length > 0)
             {
                 TryDeleteFile(actualPath);
                 File.Move(reEncodedPath, outputPathMp4);
@@ -446,6 +477,7 @@ public class MediaCacheService
             {
                 TryDeleteFile(reEncodedPath);
                 _logger.LogWarning("ffmpeg re-encode failed for {Url}", url);
+                return (null, "Could not prepare this video for playback. Please retry the download.");
             }
         }
 
@@ -460,6 +492,10 @@ public class MediaCacheService
             TryDeleteFile(actualPath);
             return (null, msg);
         }
+
+        var publishedPath = Path.Combine(CacheDirectory, Path.GetFileName(actualPath));
+        File.Move(actualPath, publishedPath, overwrite: true);
+        actualPath = publishedPath;
 
         // Generate a poster JPEG so the gallery has a thumbnail that actually loads
         // (TikTok's OG image URLs rot quickly). Best-effort: a failure here doesn't
@@ -526,7 +562,7 @@ public class MediaCacheService
     /// Downloads a Spotify track by searching YouTube for the song title + artist via yt-dlp.
     /// Uses the OG metadata from LinkPreviewService to build the search query.
     /// </summary>
-    private async Task<(MediaCacheEntry? Entry, string? Reason)> DownloadSpotifyAsync(string url, string hash, Stopwatch sw)
+    private async Task<(MediaCacheEntry? Entry, string? Reason)> DownloadSpotifyAsync(string url, string hash, Stopwatch sw, string workDirectory)
     {
         if (!IsAvailable)
         {
@@ -557,7 +593,7 @@ public class MediaCacheService
         searchQuery = searchQuery.Replace(" | Spotify", "").Replace(" - song by ", " ").Replace(" on Spotify", "").Trim();
         _logger.LogInformation("Spotify -> YouTube search: \"{Query}\" for {Url}", searchQuery, url);
 
-        var outputPath = Path.Combine(CacheDirectory, $"{hash}.mp3");
+        var outputPath = Path.Combine(workDirectory, $"{hash}.mp3");
         var args = $"--no-playlist -x --audio-format mp3 --audio-quality 2 \"ytsearch1:{searchQuery}\" -o \"{outputPath}\"";
         var (exitCode, stderr) = await RunYtDlpAsync(args, DownloadTimeoutMs);
 
@@ -569,7 +605,7 @@ public class MediaCacheService
             return (null, "Spotify YouTube-search failed: " + SummariseYtDlpError(stderr));
         }
 
-        var actualPath = FindOutputFile(hash);
+        var actualPath = FindOutputFile(hash, workDirectory);
         if (actualPath == null)
         {
             _logger.LogWarning("yt-dlp completed but output file not found for Spotify {Url}", url);
@@ -587,6 +623,8 @@ public class MediaCacheService
 
         var actualExt = Path.GetExtension(actualPath);
         var localUrl = $"/media-cache/{hash}{actualExt}";
+
+        File.Move(actualPath, Path.Combine(CacheDirectory, Path.GetFileName(actualPath)), overwrite: true);
 
         _logger.LogInformation("Cached Spotify: {Url} -> {File} ({SizeKB}KB, \"{Query}\", {ElapsedMs}ms)",
             url, Path.GetFileName(actualPath), fileSize / 1024, searchQuery, sw.ElapsedMilliseconds);
@@ -707,31 +745,20 @@ public class MediaCacheService
         return TruncateLog(summary, 400);
     }
 
-    /// <summary>
-    /// Finds an output file by hash prefix. Uses glob to catch any extension
-    /// yt-dlp may have chosen. Video extensions preferred over audio.
-    /// </summary>
-    private string? FindOutputFile(string hash)
+    // Only exact, nonempty media filenames count as completed outputs. Posters,
+    // yt-dlp fragments, .part files, and temporary transcodes must never be played.
+    private string? FindOutputFile(string hash, string? directory = null)
     {
-        try
+        foreach (var ext in new[] { ".mp4", ".webm", ".mkv", ".mp3", ".m4a", ".opus", ".ogg", ".wav", ".flac", ".aac" })
         {
-            var files = Directory.GetFiles(CacheDirectory, $"{hash}.*");
-            if (files.Length == 0) return null;
-
-            // Prefer video files over audio
-            var video = files.FirstOrDefault(f => IsVideoExtension(Path.GetExtension(f)));
-            return video ?? files[0];
+            var path = Path.Combine(directory ?? CacheDirectory, hash + ext);
+            var file = new FileInfo(path);
+            if (file.Exists && file.Length > 0) return path;
         }
-        catch
-        {
-            return null;
-        }
+        return null;
     }
 
-    private static bool IsVideoExtension(string ext)
-    {
-        return ext is ".mp4" or ".webm" or ".mkv";
-    }
+    private static bool IsVideoExtension(string ext) => ext is ".mp4" or ".webm" or ".mkv";
 
     private static string ComputeHash(string url) => UrlHash.Compute(url);
 
@@ -773,31 +800,19 @@ public class MediaCacheService
     /// </summary>
     private async Task<bool> IsH264Async(string filePath)
     {
-        try
-        {
-            var psi = new ProcessStartInfo("ffprobe",
-                $"-v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 \"{filePath}\"")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            using var process = Process.Start(psi);
-            if (process == null) return true; // assume OK if can't check
-
-            var output = await process.StandardOutput.ReadToEndAsync();
-            await process.WaitForExitAsync();
-            var codec = output.Trim().ToLowerInvariant();
-            return codec == "h264";
-        }
-        catch
-        {
-            return true; // assume OK on error
-        }
+        var (exitCode, output) = await RunMediaProcessAsync("ffprobe",
+            $"-v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 \"{filePath}\"",
+            MetadataTimeoutMs);
+        return exitCode == 0 && output.Trim().Equals("h264", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<int> RunProcessAsync(string fileName, string args, int timeoutMs)
+    {
+        var (exitCode, _) = await RunMediaProcessAsync(fileName, args, timeoutMs);
+        return exitCode;
+    }
+
+    private async Task<(int ExitCode, string Output)> RunMediaProcessAsync(string fileName, string args, int timeoutMs)
     {
         var psi = new ProcessStartInfo(fileName, args)
         {
@@ -807,19 +822,35 @@ public class MediaCacheService
             CreateNoWindow = true
         };
         using var process = Process.Start(psi);
-        if (process == null) return -1;
+        if (process == null) return (-1, "");
 
         using var cts = new CancellationTokenSource(timeoutMs);
+        // Drain both pipes immediately. Keep only ffprobe's small stdout; discard
+        // ffmpeg progress without accumulating an unbounded string in memory.
+        var stdoutTask = fileName == "ffprobe"
+            ? process.StandardOutput.ReadToEndAsync(cts.Token)
+            : DrainOutputAsync(process.StandardOutput.BaseStream, cts.Token);
+        var stderrTask = process.StandardError.BaseStream.CopyToAsync(Stream.Null, cts.Token);
         try
         {
             await process.WaitForExitAsync(cts.Token);
-            return process.ExitCode;
+            await Task.WhenAll(stdoutTask, stderrTask);
+            return (process.ExitCode, await stdoutTask);
         }
         catch (OperationCanceledException)
         {
             try { process.Kill(entireProcessTree: true); } catch { }
-            return -1;
+            // Observe the canceled pipe reads before disposing the process.
+            try { await Task.WhenAll(stdoutTask, stderrTask); } catch (OperationCanceledException) { }
+            _logger.LogWarning("{Tool} timed out after {TimeoutMs}ms", fileName, timeoutMs);
+            return (-1, "");
         }
+    }
+
+    private static async Task<string> DrainOutputAsync(Stream stream, CancellationToken ct)
+    {
+        await stream.CopyToAsync(Stream.Null, ct);
+        return "";
     }
 
     private static void TryDeleteFile(string path)

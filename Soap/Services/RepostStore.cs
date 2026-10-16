@@ -17,6 +17,8 @@ public class RepostStore
     private readonly ConcurrentDictionary<string, RepostEntry> _byId = new();
     private readonly SemaphoreSlim _saveLock = new(1, 1);
     private CancellationTokenSource? _saveDebounceCts;
+    private readonly object _importLock = new();
+    private long _nextRepostOrder;
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -45,6 +47,10 @@ public class RepostStore
             {
                 if (!string.IsNullOrEmpty(entry.Url))
                 {
+                    // Older galleries have no source order. Retain their previous
+                    // ordering until a newest-first import supplies it.
+                    if (entry.RepostOrder == 0) entry.RepostOrder = entry.AddedAt.Ticks;
+                    _nextRepostOrder = Math.Max(_nextRepostOrder, entry.RepostOrder);
                     _entries[entry.Url] = entry;
                     _byId[entry.Id] = entry;
                 }
@@ -62,7 +68,8 @@ public class RepostStore
     public RepostEntry? GetById(string id) => _byId.TryGetValue(id, out var e) ? e : null;
 
     public IReadOnlyList<RepostEntry> GetAll() =>
-        _entries.Values.OrderByDescending(e => e.AddedAt).ToList();
+        _entries.Values.OrderByDescending(e => e.RepostOrder)
+            .ThenByDescending(e => e.AddedAt).ThenBy(e => e.Url, StringComparer.Ordinal).ToList();
 
     public (int Queued, int Downloading, int Ready, int Failed) GetCounts()
     {
@@ -81,23 +88,41 @@ public class RepostStore
     }
 
     /// <summary>
-    /// Adds a URL if not present. Returns true if it was new.
+    /// Import a newest-first source list. Reimporting updates its order without
+    /// resetting existing statuses, files, or import dates. Returns only new URLs.
+    /// Separate batches appear newest first; duplicate URLs keep their first position.
     /// </summary>
-    public bool TryAdd(string url, string? sourceProfile)
+    public IReadOnlyList<string> ImportNewestFirst(IEnumerable<string> urls, string? sourceProfile)
     {
-        var entry = new RepostEntry
+        var ordered = urls.Distinct(StringComparer.Ordinal).ToList();
+        if (ordered.Count == 0) return [];
+        var added = new List<string>();
+        lock (_importLock)
         {
-            Url = url,
-            SourceProfile = sourceProfile,
-            Status = RepostStatus.Queued,
-            AddedAt = DateTime.UtcNow
-        };
-        var added = _entries.TryAdd(url, entry);
-        if (added)
-        {
-            _byId[entry.Id] = entry;
-            ScheduleSave();
+            _nextRepostOrder = checked(_nextRepostOrder + ordered.Count);
+            var order = _nextRepostOrder;
+            var importedAt = DateTime.UtcNow;
+            foreach (var url in ordered)
+            {
+                if (_entries.TryGetValue(url, out var existing))
+                {
+                    existing.RepostOrder = order--;
+                    continue;
+                }
+                var entry = new RepostEntry
+                {
+                    Url = url,
+                    SourceProfile = sourceProfile,
+                    Status = RepostStatus.Queued,
+                    AddedAt = importedAt,
+                    RepostOrder = order--
+                };
+                _entries[url] = entry;
+                _byId[entry.Id] = entry;
+                added.Add(url);
+            }
         }
+        ScheduleSave();
         return added;
     }
 
@@ -130,7 +155,7 @@ public class RepostStore
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-            var list = _entries.Values.OrderByDescending(e => e.AddedAt).ToList();
+            var list = GetAll();
             var tmp = FilePath + ".tmp";
             await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(list, JsonOpts));
             File.Move(tmp, FilePath, overwrite: true);

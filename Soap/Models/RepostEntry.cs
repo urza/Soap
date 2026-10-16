@@ -32,6 +32,9 @@ public class RepostEntry
     public int? MediaDurationSeconds { get; set; }
     public RepostStatus Status { get; set; } = RepostStatus.Queued;
     public DateTime AddedAt { get; set; } = DateTime.UtcNow;
+    // Higher values appear first. Preserves the newest-first repost list without
+    // pretending that the import timestamp is the original TikTok repost date.
+    public long RepostOrder { get; set; }
     public DateTime? CompletedAt { get; set; }
     public string? ErrorMessage { get; set; }
 }

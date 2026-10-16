@@ -11,7 +11,20 @@ env:
   IMAGE_NAME: ${{ github.repository }}   # owner/repo (auto-lowercased)
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet build Soap.sln -c Release --nologo
+      - run: python3 -m unittest discover -s tests -v
+
   build-and-push:
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -44,6 +57,8 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ./Soap
+          pull: true
+          no-cache-filters: media-tools
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

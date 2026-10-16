@@ -10,3 +10,7 @@ Soap/Data/media-cache/
 Soap/Data/link-preview-settings.json
 Soap/Data/reposts.json
 Soap/Data/tiktok-cookies.txt
+
+Soap/Data/media-work/
+Soap/Data/pacing-settings.json
+__pycache__/
