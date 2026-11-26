@@ -60,7 +60,7 @@ class DownloadTests(unittest.TestCase):
         env = dict(os.environ, PATH=str(self.bin) + ':' + os.environ['PATH'], SOAP_TEST_ROOT=str(self.root))
         self.log = (self.root / 'server.log').open('a')
         self.process = subprocess.Popen([
-            'dotnet', str(REPO / 'Soap/bin/Release/net10.0/Soap.dll'),
+            'dotnet', str(REPO / 'Soap/bin/Release/net11.0/Soap.dll'),
             '--contentRoot', str(self.root), '--webroot', str(REPO / 'Soap/wwwroot'), '--urls', self.base,
         ], env=env, stdout=self.log, stderr=self.log, start_new_session=True)
         self.wait_for(lambda: self.request('/health'))
