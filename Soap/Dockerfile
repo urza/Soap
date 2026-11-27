@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # Refresh this stage with --no-cache-filter media-tools to pick up new releases.
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS media-tools
+FROM mcr.microsoft.com/dotnet/aspnet:11.0 AS media-tools
 ARG TARGETARCH
 ARG YTDLP_VERSION=latest
 ARG FFMPEG_VERSION=latest
@@ -13,7 +13,7 @@ RUN TARGETARCH="$TARGETARCH" YTDLP_VERSION="$YTDLP_VERSION" FFMPEG_VERSION="$FFM
     python3 /tmp/install-media-tools.py
 
 # ---------- Runtime base (with current stable ffmpeg + ffprobe + yt-dlp) ----------
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS base
+FROM mcr.microsoft.com/dotnet/aspnet:11.0 AS base
 COPY --from=media-tools /tools/ /usr/local/bin/
 RUN /usr/local/bin/yt-dlp --version \
  && /usr/local/bin/ffmpeg -version \
@@ -22,7 +22,7 @@ WORKDIR /app
 EXPOSE 8080
 
 # ---------- Build ----------
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
 WORKDIR /src
 
 COPY Soap.csproj ./
